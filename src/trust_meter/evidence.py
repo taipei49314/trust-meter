@@ -147,6 +147,7 @@ def collect_test_results(target: Path, timeout: int = 60) -> RunResult:
             text=True,
             timeout=timeout,
             cwd=str(target),
+            errors="replace",
         )
         output = result.stdout + result.stderr
         passed = output.count(" PASSED")

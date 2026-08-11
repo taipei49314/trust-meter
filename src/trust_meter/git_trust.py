@@ -36,7 +36,7 @@ def current_commit_info(repo_root: Path) -> CommitInfo | None:
     try:
         result = subprocess.run(
             ["git", "log", "-1", "--format=%H|%h|%an|%ai|%s"],
-            capture_output=True, text=True, cwd=str(repo_root),
+            capture_output=True, text=True, cwd=str(repo_root), close_fds=True, errors="replace",
             timeout=10,
         )
         if result.returncode != 0:
@@ -57,7 +57,7 @@ def commit_history(repo_root: Path, count: int = 10) -> list[CommitInfo]:
     try:
         result = subprocess.run(
             ["git", "log", f"-{count}", "--format=%H|%h|%an|%ai|%s"],
-            capture_output=True, text=True, cwd=str(repo_root),
+            capture_output=True, text=True, cwd=str(repo_root), close_fds=True, errors="replace",
             timeout=10,
         )
         if result.returncode != 0:
@@ -80,7 +80,7 @@ def changed_files(repo_root: Path, ref: str = "HEAD") -> list[str]:
     try:
         result = subprocess.run(
             ["git", "diff-tree", "--no-commit-id", "-r", "--name-only", ref],
-            capture_output=True, text=True, cwd=str(repo_root),
+            capture_output=True, text=True, cwd=str(repo_root), close_fds=True, errors="replace",
             timeout=10,
         )
         if result.returncode != 0:
@@ -95,7 +95,7 @@ def is_dirty(repo_root: Path) -> bool:
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
-            capture_output=True, text=True, cwd=str(repo_root),
+            capture_output=True, text=True, cwd=str(repo_root), close_fds=True, errors="replace",
             timeout=10,
         )
         return bool(result.stdout.strip())
@@ -108,7 +108,7 @@ def branch_name(repo_root: Path) -> str:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, cwd=str(repo_root),
+            capture_output=True, text=True, cwd=str(repo_root), close_fds=True, errors="replace",
             timeout=10,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
