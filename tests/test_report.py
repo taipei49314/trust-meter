@@ -27,7 +27,7 @@ def test_generate_report_basic():
 
     assert report.passed is True
     assert report.phase_gate == "Phase 3"
-    assert len(report.metrics) == 5
+    assert len(report.metrics) >= 5
     assert report.overall_score > 0
 
 

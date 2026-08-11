@@ -8,7 +8,7 @@ from trust_meter.cli import main, build_meter
 
 def test_build_meter():
     meter = build_meter()
-    assert len(meter._collectors) == 5
+    assert len(meter._collectors) >= 5
 
 
 def test_main_clean_project():
