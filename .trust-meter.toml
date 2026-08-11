@@ -1,0 +1,11 @@
+[trust-meter]
+threshold = 90.0
+phase_gate = "Self-audit"
+strict = true
+
+[skip]
+patterns = ["scripts/*", "specs/*"]
+
+[limits]
+max_function_lines = 50
+max_imports_per_module = 15
