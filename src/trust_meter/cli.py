@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 from trust_meter.config import load_config
+from trust_meter.formats import to_junit_xml, to_html
 from trust_meter.meter import TrustMeter
 from trust_meter.metrics.determinism import collect_determinism
 from trust_meter.metrics.locality import collect_locality
@@ -35,6 +36,17 @@ def build_meter() -> TrustMeter:
     return meter
 
 
+def _format_output(report, args) -> str:
+    """Select output format based on CLI flags."""
+    if args.junit:
+        return to_junit_xml(report)
+    if args.html:
+        return to_html(report)
+    if args.json:
+        return report.to_json()
+    return report.to_markdown()
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point: measure a directory and report trust score."""
     parser = argparse.ArgumentParser(
@@ -44,7 +56,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("target", type=Path, help="Directory to measure")
     parser.add_argument("--threshold", type=float, default=None, help="Minimum score to pass")
     parser.add_argument("--phase", type=str, default=None, help="Phase gate label for report")
-    parser.add_argument("--json", action="store_true", help="Output JSON instead of markdown")
+    parser.add_argument("--json", action="store_true", help="Output JSON")
+    parser.add_argument("--junit", action="store_true", help="Output JUnit XML for CI")
+    parser.add_argument("--html", action="store_true", help="Output HTML report")
     parser.add_argument("--output", type=Path, default=None, help="Write report to file")
     parser.add_argument("--strict", action="store_true", help="All metrics must individually pass")
 
@@ -66,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     if strict:
         report.passed = report.passed and all(m.passed for m in report.metrics)
 
-    output = report.to_json() if args.json else report.to_markdown()
+    output = _format_output(report, args)
 
     if args.output:
         args.output.write_text(output, encoding="utf-8")
