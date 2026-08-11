@@ -68,23 +68,43 @@ def find_config(start: Path) -> Path | None:
         current = parent
 
 
+def _apply_trust_meter(config: Config, key: str, value: str) -> None:
+    """Apply a trust-meter section key-value pair."""
+    if key == "threshold":
+        config.threshold = _parse_float(value, 70.0)
+    elif key == "phase_gate":
+        config.phase_gate = _parse_string(value, "")
+    elif key == "strict":
+        config.strict = _parse_bool(value, False)
+
+
+def _apply_skip(config: Config, key: str, value: str) -> None:
+    """Apply a skip section key-value pair."""
+    if key == "patterns":
+        config.skip_patterns = _parse_list(value)
+
+
+_SECTION_HANDLERS = {
+    "trust-meter": _apply_trust_meter,
+    "skip": _apply_skip,
+}
+
+
 def parse_config(text: str) -> Config:
     """Parse a .trust-meter.toml file. Zero external dependencies."""
     config = Config()
-
     section = ""
+
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
 
-        # Section header
         section_match = re.match(r"^\[([^\]]+)\]$", stripped)
         if section_match:
             section = section_match.group(1).strip()
             continue
 
-        # Key-value pair
         kv_match = re.match(r'^(\w+)\s*=\s*(.+)$', stripped)
         if not kv_match:
             continue
@@ -92,21 +112,10 @@ def parse_config(text: str) -> Config:
         key = kv_match.group(1).strip()
         value = kv_match.group(2).strip()
 
-        if section == "trust-meter":
-            if key == "threshold":
-                config.threshold = _parse_float(value, 70.0)
-            elif key == "phase_gate":
-                config.phase_gate = _parse_string(value, "")
-            elif key == "strict":
-                config.strict = _parse_bool(value, False)
-
-        elif section == "skip":
-            if key == "patterns":
-                config.skip_patterns = _parse_list(value)
-
+        if section in _SECTION_HANDLERS:
+            _SECTION_HANDLERS[section](config, key, value)
         elif section == "weights":
             config.weights[key] = _parse_float(value, 1.0)
-
         elif section == "limits":
             config.limits[key] = _parse_int(value, 0)
 

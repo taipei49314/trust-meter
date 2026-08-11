@@ -98,6 +98,27 @@ def collect_file_evidence(target: Path) -> list[FileEvidence]:
     return evidence
 
 
+def _extract_imports(tree: ast.AST, source_module: str) -> list[ImportEdge]:
+    """Extract import edges from an AST."""
+    edges: list[ImportEdge] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                edges.append(ImportEdge(
+                    source=source_module,
+                    target=alias.name.split(".")[0],
+                    line=node.lineno,
+                ))
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                edges.append(ImportEdge(
+                    source=source_module,
+                    target=node.module.split(".")[0],
+                    line=node.lineno,
+                ))
+    return edges
+
+
 def collect_import_graph(target: Path) -> list[ImportEdge]:
     """Build import dependency graph from Python source files."""
     edges: list[ImportEdge] = []
@@ -112,22 +133,7 @@ def collect_import_graph(target: Path) -> list[ImportEdge]:
         except Exception:
             continue
 
-        source_module = py_file.stem
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    edges.append(ImportEdge(
-                        source=source_module,
-                        target=alias.name.split(".")[0],
-                        line=node.lineno,
-                    ))
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    edges.append(ImportEdge(
-                        source=source_module,
-                        target=node.module.split(".")[0],
-                        line=node.lineno,
-                    ))
+        edges.extend(_extract_imports(tree, py_file.stem))
 
     return edges
 

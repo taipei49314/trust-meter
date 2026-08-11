@@ -22,6 +22,7 @@ from trust_meter.metrics.evidence import collect_evidence
 from trust_meter.metrics.reproducibility import collect_reproducibility
 from trust_meter.metrics.transparency import collect_transparency
 from trust_meter.metrics.architecture import collect_architecture
+from trust_meter.metrics.complexity import collect_complexity
 
 
 def build_meter() -> TrustMeter:
@@ -32,6 +33,7 @@ def build_meter() -> TrustMeter:
     meter.register("evidence", collect_evidence, weight=1.0)
     meter.register("reproducibility", collect_reproducibility, weight=1.0)
     meter.register("architecture", collect_architecture, weight=1.0)
+    meter.register("complexity", collect_complexity, weight=0.5)
     meter.register("transparency", collect_transparency, weight=0.5)
     return meter
 
