@@ -2,6 +2,9 @@
 
 Usage:
     trust-meter <target_dir> [--threshold 70] [--phase "Phase 0"] [--json] [--output report.json]
+
+Config file (.trust-meter.toml) is loaded automatically from the target directory.
+CLI flags override config file values.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from trust_meter.config import load_config
 from trust_meter.meter import TrustMeter
 from trust_meter.metrics.determinism import collect_determinism
 from trust_meter.metrics.locality import collect_locality
@@ -38,11 +42,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Measure before you trust. Deterministic, evidence-backed trust scoring.",
     )
     parser.add_argument("target", type=Path, help="Directory to measure")
-    parser.add_argument("--threshold", type=float, default=70.0, help="Minimum score to pass (default: 70)")
-    parser.add_argument("--phase", type=str, default="", help="Phase gate label for report")
+    parser.add_argument("--threshold", type=float, default=None, help="Minimum score to pass")
+    parser.add_argument("--phase", type=str, default=None, help="Phase gate label for report")
     parser.add_argument("--json", action="store_true", help="Output JSON instead of markdown")
     parser.add_argument("--output", type=Path, default=None, help="Write report to file")
-    parser.add_argument("--strict", action="store_true", help="All metrics must individually pass (not just overall)")
+    parser.add_argument("--strict", action="store_true", help="All metrics must individually pass")
 
     args = parser.parse_args(argv)
 
@@ -50,10 +54,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {args.target} is not a directory", file=sys.stderr)
         return 1
 
-    meter = build_meter()
-    report = meter.measure(args.target, threshold=args.threshold, phase_gate=args.phase)
+    # Load config (CLI flags override config)
+    config = load_config(args.target)
+    threshold = args.threshold if args.threshold is not None else config.threshold
+    phase_gate = args.phase if args.phase is not None else config.phase_gate
+    strict = args.strict or config.strict
 
-    if args.strict:
+    meter = build_meter()
+    report = meter.measure(args.target, threshold=threshold, phase_gate=phase_gate)
+
+    if strict:
         report.passed = report.passed and all(m.passed for m in report.metrics)
 
     output = report.to_json() if args.json else report.to_markdown()
