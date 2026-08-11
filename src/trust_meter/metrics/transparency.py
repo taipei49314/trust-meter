@@ -29,6 +29,57 @@ def _is_production(path: Path, root: Path) -> bool:
     return True
 
 
+def _scan_comments(lines: list[str], rel: str) -> list[str]:
+    """Scan comment lines for incomplete-work markers."""
+    issues: list[str] = []
+    for line_no, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        for marker in ("TODO", "FIXME", "HACK", "XXX"):
+            if marker in stripped:
+                issues.append(f"{rel}:{line_no}: contains {marker}")
+    return issues
+
+
+def _analyze_ast(text: str, rel: str) -> tuple[list[str], int, int]:
+    """AST analysis for docstrings and function lengths."""
+    issues: list[str] = []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return issues, 0, 0
+
+    public_items = 0
+    documented_items = 0
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name.startswith("_") and node.name != "__init__":
+                continue
+            public_items += 1
+            has_doc = (
+                node.body
+                and isinstance(node.body[0], ast.Expr)
+                and isinstance(node.body[0].value, ast.Constant)
+                and isinstance(node.body[0].value.value, str)
+            )
+            if has_doc:
+                documented_items += 1
+            else:
+                issues.append(f"{rel}:{node.lineno}: {node.name} missing docstring")
+
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if hasattr(node, "end_lineno") and node.end_lineno:
+                    func_len = node.end_lineno - node.lineno + 1
+                    if func_len > MAX_FUNC_LINES:
+                        issues.append(
+                            f"{rel}:{node.lineno}: {node.name} exceeds {MAX_FUNC_LINES} lines ({func_len})"
+                        )
+
+    return issues, public_items, documented_items
+
+
 def _analyze_file(path: Path, root: Path) -> tuple[list[str], int, int]:
     """Analyze a single file. Returns (issues, public_items, items_with_docstrings)."""
     issues: list[str] = []
@@ -43,53 +94,11 @@ def _analyze_file(path: Path, root: Path) -> tuple[list[str], int, int]:
     if len(lines) > MAX_FILE_LINES:
         issues.append(f"{rel}: file exceeds {MAX_FILE_LINES} lines ({len(lines)})")
 
-    # Scan comment lines for incomplete-work markers
-    for line_no, line in enumerate(lines, 1):
-        stripped = line.strip()
-        # Only flag markers in actual comments, not in string/data definitions
-        if not stripped.startswith("#"):
-            continue
-        for marker in ("TODO", "FIXME", "HACK", "XXX"):
-            if marker in stripped:
-                issues.append(f"{rel}:{line_no}: contains {marker}")
+    issues.extend(_scan_comments(lines, rel))
+    ast_issues, public, documented = _analyze_ast(text, rel)
+    issues.extend(ast_issues)
 
-    # AST analysis
-    try:
-        tree = ast.parse(text)
-    except SyntaxError:
-        return issues, 0, 0
-
-    public_items = 0
-    documented_items = 0
-
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            if node.name.startswith("_") and node.name != "__init__":
-                continue
-            public_items += 1
-
-            # Check docstring
-            has_docstring = (
-                node.body
-                and isinstance(node.body[0], ast.Expr)
-                and isinstance(node.body[0].value, (ast.Constant,))
-                and isinstance(node.body[0].value.value, str)
-            )
-            if has_docstring:
-                documented_items += 1
-            else:
-                issues.append(f"{rel}:{node.lineno}: {node.name} missing docstring")
-
-            # Check function length
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if hasattr(node, "end_lineno") and node.end_lineno:
-                    func_len = node.end_lineno - node.lineno + 1
-                    if func_len > MAX_FUNC_LINES:
-                        issues.append(
-                            f"{rel}:{node.lineno}: {node.name} exceeds {MAX_FUNC_LINES} lines ({func_len})"
-                        )
-
-    return issues, public_items, documented_items
+    return issues, public, documented
 
 
 def _compute_score_and_details(
