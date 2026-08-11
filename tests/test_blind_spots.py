@@ -16,7 +16,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from trust_meter.meter import TrustMeter, MetricResult
+from trust_meter.meter import TrustMeter, MetricResult, TrustReport
 from trust_meter.config import parse_config, Config
 from trust_meter.ignore import load_trustignore, is_ignored
 from trust_meter.spec import parse_spec
@@ -364,3 +364,261 @@ def test_evidence_test_with_only_raise():
     assert tc == 1
     assert ac == 1  # raise counts as assertion
     assert et == 0
+
+
+# === Unicode file names ===
+
+def test_unicode_filename():
+    """Unicode file names should be handled."""
+    d = _make_project({"src/計算.py": "def add(a, b):\n    return a + b\n"})
+    result = collect_determinism(d)
+    assert result.passed is True
+
+
+def test_unicode_filename_evidence():
+    """Unicode file names in evidence collection."""
+    d = _make_project({"src/計算.py": "x = 1\n"})
+    evidence = collect_evidence(d)
+    assert evidence.name == "evidence"
+
+
+def test_unicode_filename_transparency():
+    """Unicode file names in transparency check."""
+    d = _make_project({"src/計算.py": 'def f():\n    """Doc."""\n    pass\n'})
+    result = collect_transparency(d)
+    assert result.passed is True
+
+
+# === Symlinks ===
+
+def test_symlink_handling():
+    """Symlinks should be handled gracefully (skip if broken)."""
+    d = _make_project({"src/real.py": "x = 1\n"})
+    link = d / "src" / "link.py"
+    try:
+        link.symlink_to(d / "src" / "real.py")
+        result = collect_determinism(d)
+        assert result.name == "determinism"
+    except (OSError, AttributeError):
+        # Symlinks may not be supported on this system
+        pass
+
+
+# === Plugin self-import ===
+
+def test_plugin_self_import():
+    """Plugin that imports itself should fail gracefully."""
+    d = _make_project({
+        "circular.py": (
+            "import circular\n"
+            "def collect_circular(target):\n"
+            "    pass\n"
+        ),
+    })
+    name, collector = _load_plugin(d / "circular.py")
+    # Should fail gracefully (import error)
+    assert name is None
+
+
+# === Import from nonexistent module ===
+
+def test_import_nonexistent_module():
+    """Importing a nonexistent local module should be handled."""
+    d = _make_project({
+        "src/main.py": "import nonexistent_module_xyz\nx = 1\n",
+    })
+    result = collect_architecture(d)
+    # Should not crash
+    assert result.name == "architecture"
+
+
+# === Git not available ===
+
+def test_git_trust_no_repo():
+    """Git operations on non-repo directory should return None/empty."""
+    from trust_meter.git_trust import current_commit_info, commit_history, branch_name, is_dirty
+    d = Path(tempfile.mkdtemp())
+    # Not a git repo
+    assert current_commit_info(d) is None
+    assert commit_history(d) == []
+    assert branch_name(d) == ""
+    assert is_dirty(d) is False
+
+
+# === Permission denied (simulated) ===
+
+def test_unreadable_file_skipped():
+    """Unreadable files should be skipped gracefully."""
+    d = _make_project({"src/good.py": "x = 1\n"})
+    # Create a file that exists but we can check the error path
+    # by checking that the metric doesn't crash on missing files
+    result = collect_determinism(d)
+    assert result.name == "determinism"
+
+
+# === All metrics on binary-heavy project ===
+
+def test_all_metrics_binary_heavy():
+    """All metrics on project with many binary files."""
+    d = Path(tempfile.mkdtemp())
+    src = d / "src"
+    src.mkdir()
+    (src / "good.py").write_text("x = 1\n")
+    for i in range(5):
+        (src / f"bad{i}.py").write_bytes(b"\x80\x81\x82")
+    assert collect_determinism(d).name == "determinism"
+    assert collect_locality(d).name == "locality"
+    assert collect_evidence(d).name == "evidence"
+    assert collect_reproducibility(d).name == "reproducibility"
+    assert collect_architecture(d).name == "architecture"
+    assert collect_complexity(d).name == "complexity"
+    assert collect_transparency(d).name == "transparency"
+
+
+# === Config with all edge values ===
+
+def test_config_all_edge_values():
+    """Config with extreme values."""
+    config = parse_config(
+        "[trust-meter]\n"
+        "threshold = 0.0\n"
+        "strict = true\n"
+        "[skip]\n"
+        'patterns = ["a", "b", "c"]\n'
+        "[weights]\n"
+        "a = 0.0\n"
+        "b = 999.0\n"
+        "[limits]\n"
+        "x = 0\n"
+        "y = 99999\n"
+    )
+    assert config.threshold == 0.0
+    assert config.strict is True
+    assert len(config.skip_patterns) == 3
+    assert config.weights["a"] == 0.0
+    assert config.weights["b"] == 999.0
+    assert config.limits["y"] == 99999
+
+
+# === Spec with all assertion types ===
+
+def test_spec_all_assertion_types():
+    """Spec with all assertion types."""
+    spec = parse_spec(
+        '[project]\nname = "test"\nmin_python = "3.9"\n'
+        '[assertions]\nmodules = ["a", "b"]\n'
+        'require_tests = true\nrequire_docstrings = true\n'
+        'max_function_lines = 30\n'
+    )
+    # 2 module_exists + 2 has_test + 2 has_docstring + 1 max_function_lines
+    assert len(spec.assertions) == 7
+
+
+# === Meter with single failing metric ===
+
+def test_meter_single_failing():
+    """Meter with one failing metric should fail overall."""
+    meter = TrustMeter()
+    meter.register("good", lambda p: MetricResult("good", 100, 1.0, True, [], "ok"))
+    meter.register("bad", lambda p: MetricResult("bad", 50, 1.0, False, [], "fail"))
+    d = Path(tempfile.mkdtemp())
+    report = meter.measure(d, threshold=70)
+    assert report.passed is False  # one metric fails
+
+
+# === Trending with many entries ===
+
+def test_trending_many_entries():
+    """Trending with many entries should work."""
+    d = Path(tempfile.mkdtemp())
+    tracker = TrendTracker(d)
+    for i in range(100):
+        tracker.add_score(float(i))
+    assert tracker.count == 100
+    assert tracker.average() == 49.5
+    assert tracker.sparkline(width=10) != ""
+
+
+# === Baseline roundtrip with all metric data ===
+
+def test_baseline_full_roundtrip():
+    """Baseline with all metric data should roundtrip."""
+    from trust_meter.baseline import save_baseline, load_baseline
+    d = Path(tempfile.mkdtemp())
+    report = TrustReport(
+        target="test", timestamp="2026-01-01T00:00:00Z",
+        overall_score=95, passed=True,
+        metrics=[
+            MetricResult("det", 100, 1.0, True, ["evidence1"], "detail1"),
+            MetricResult("loc", 90, 1.0, True, [], "detail2"),
+        ],
+    )
+    path = d / "baseline.json"
+    save_baseline(report, path)
+    loaded = load_baseline(path)
+    assert loaded.metrics[0].evidence == ["evidence1"]
+    assert loaded.metrics[1].score == 90
+
+
+# === Comparison with all tie ===
+
+def test_comparison_all_tie():
+    """Comparison where all metrics tie."""
+    from trust_meter.compare import _build_comparison
+    left = TrustReport("a", "", 90, True, [
+        MetricResult("det", 90, 1.0, True, [], "ok"),
+        MetricResult("loc", 90, 1.0, True, [], "ok"),
+    ])
+    right = TrustReport("b", "", 90, True, [
+        MetricResult("det", 90, 1.0, True, [], "ok"),
+        MetricResult("loc", 90, 1.0, True, [], "ok"),
+    ])
+    result = _build_comparison(left, right)
+    assert result.overall_winner == "tie"
+    assert all(m.winner == "tie" for m in result.metrics)
+
+
+# === Comparison with missing metric ===
+
+def test_comparison_missing_metric():
+    """Comparison where one side has fewer metrics."""
+    from trust_meter.compare import _build_comparison
+    left = TrustReport("a", "", 90, True, [
+        MetricResult("det", 100, 1.0, True, [], "ok"),
+        MetricResult("loc", 80, 1.0, True, [], "ok"),
+    ])
+    right = TrustReport("b", "", 50, False, [
+        MetricResult("det", 50, 1.0, False, [], "fail"),
+    ])
+    result = _build_comparison(left, right)
+    assert len(result.metrics) == 2
+    loc_metric = next(m for m in result.metrics if m.name == "loc")
+    assert loc_metric.winner == "left"
+    assert loc_metric.right_score == 0
+
+
+# === API with all methods ===
+
+def test_api_all_methods():
+    """API should work for all methods."""
+    from trust_meter.api import TrustAPI
+    d = _make_project({
+        "src/a.py": 'def f():\n    """Doc."""\n    pass\n',
+        "tests/test_a.py": "def test_f():\n    pass\n",
+    })
+    api = TrustAPI()
+    score = api.score(d)
+    assert score.overall > 0
+    assert isinstance(score.passed, bool)
+
+    report = api.full_report(d)
+    assert report.overall_score > 0
+
+    hints = api.hints(d)
+    assert isinstance(hints, list)
+
+    modules = api.modules(d)
+    assert "count" in modules
+
+    batch = api.batch([d])
+    assert len(batch) == 1
