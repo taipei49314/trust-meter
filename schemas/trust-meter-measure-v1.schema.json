@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/taipei49314/trust-meter/schemas/trust-meter-measure-v1.schema.json",
+  "$id": "https://github.com/taipei49314/trust-meter/releases/download/v0.2.0/trust-meter-measure-v1.schema.json",
   "title": "trust-meter built-in static measurement v1",
   "type": "object",
   "additionalProperties": false,

@@ -14,7 +14,7 @@ import pytest
 from tools.release_artifacts import VerificationError, verify_sdist, verify_wheel
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 DIST_INFO = f"trust_meter-{VERSION}.dist-info"
 SCHEMA_PATH = "schemas/trust-meter-measure-v1.schema.json"
 WHEEL_SCHEMA_PATH = "trust_meter/schemas/trust-meter-measure-v1.schema.json"
@@ -40,7 +40,7 @@ def _write_project(root: Path) -> None:
     (root / "LICENSE").write_text("test license\n", encoding="utf-8")
     (root / SCHEMA_PATH).write_text('{"title":"canonical"}\n', encoding="utf-8")
     (package / "__init__.py").write_text(
-        '__version__ = "0.1.0"\n', encoding="utf-8",
+        '__version__ = "0.2.0"\n', encoding="utf-8",
     )
     (package / "cli.py").write_text('"""CLI."""\n', encoding="utf-8")
     (root / "pyproject.toml").write_text(

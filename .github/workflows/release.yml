@@ -17,15 +17,16 @@ on:
         required: true
         type: string
       draft_release_id:
-        description: Existing empty draft GitHub Release ID for tag v0.2.0
-        required: true
+        description: Existing empty draft Release ID; required except in rehearsal mode
+        required: false
         type: string
       mode:
-        description: Prepare only, or create-only upload to the gated draft release
+        description: Pre-tag rehearsal, full dry-run, or create-only gated draft upload
         required: true
-        default: dry-run
+        default: rehearsal
         type: choice
         options:
+          - rehearsal
           - dry-run
           - upload-draft
 
@@ -50,11 +51,13 @@ jobs:
       ci_artifact_id: ${{ steps.inspect.outputs.ci_artifact_id }}
       ci_artifact_digest: ${{ steps.inspect.outputs.ci_artifact_digest }}
       tag_object_sha: ${{ steps.inspect.outputs.tag_object_sha }}
+      release_notes_sha256: ${{ steps.inspect.outputs.release_notes_sha256 }}
     env:
       RELEASE_VERSION: ${{ inputs.version }}
       TARGET_SHA: ${{ inputs.commit_sha }}
       CI_RUN_ID: ${{ inputs.ci_run_id }}
       DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
+      RELEASE_MODE: ${{ inputs.mode }}
       EVENT_NAME: ${{ github.event_name }}
       REPOSITORY_CONTEXT: ${{ github.repository }}
       REF_CONTEXT: ${{ github.ref }}
@@ -77,27 +80,45 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Bind commit, successful CI artifact, tag, and draft release
+      - name: Bind commit and CI; bind tag and draft when required
         id: inspect
         env:
           GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          printf '%s\n' "$GITHUB_TOKEN" |
-            python -I tools/github_release.py inspect \
-              --event-name "$EVENT_NAME" \
-              --repository "$REPOSITORY_CONTEXT" \
-              --ref "$REF_CONTEXT" \
-              --ref-name "$REF_NAME_CONTEXT" \
-              --ref-type "$REF_TYPE_CONTEXT" \
-              --server-url "$SERVER_URL_CONTEXT" \
-              --api-url "$API_URL_CONTEXT" \
-              --workflow-sha "$WORKFLOW_SHA" \
-              --target-sha "$TARGET_SHA" \
-              --version "$RELEASE_VERSION" \
-              --ci-run-id "$CI_RUN_ID" \
-              --draft-release-id "$DRAFT_RELEASE_ID" \
-              --github-output "$GITHUB_OUTPUT"
+          if [ "$RELEASE_MODE" = rehearsal ]; then
+            printf '%s\n' "$GITHUB_TOKEN" |
+              python -I tools/github_release.py inspect-rehearsal \
+                --event-name "$EVENT_NAME" \
+                --repository "$REPOSITORY_CONTEXT" \
+                --ref "$REF_CONTEXT" \
+                --ref-name "$REF_NAME_CONTEXT" \
+                --ref-type "$REF_TYPE_CONTEXT" \
+                --server-url "$SERVER_URL_CONTEXT" \
+                --api-url "$API_URL_CONTEXT" \
+                --workflow-sha "$WORKFLOW_SHA" \
+                --target-sha "$TARGET_SHA" \
+                --version "$RELEASE_VERSION" \
+                --ci-run-id "$CI_RUN_ID" \
+                --github-output "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' "$GITHUB_TOKEN" |
+              python -I tools/github_release.py inspect \
+                --event-name "$EVENT_NAME" \
+                --repository "$REPOSITORY_CONTEXT" \
+                --ref "$REF_CONTEXT" \
+                --ref-name "$REF_NAME_CONTEXT" \
+                --ref-type "$REF_TYPE_CONTEXT" \
+                --server-url "$SERVER_URL_CONTEXT" \
+                --api-url "$API_URL_CONTEXT" \
+                --workflow-sha "$WORKFLOW_SHA" \
+                --target-sha "$TARGET_SHA" \
+                --version "$RELEASE_VERSION" \
+                --ci-run-id "$CI_RUN_ID" \
+                --draft-release-id "$DRAFT_RELEASE_ID" \
+                --release-notes ".github/RELEASE_NOTES-v0.2.0.md" \
+                --github-output "$GITHUB_OUTPUT"
+          fi
 
       - name: Check out candidate source without executing it
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -125,7 +146,7 @@ jobs:
           --bundle-dir release-bundle
           --version "$RELEASE_VERSION"
 
-      - name: Upload dry-run release bundle
+      - name: Upload prepared release bundle
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -159,6 +180,7 @@ jobs:
       BOUND_CI_ARTIFACT_ID: ${{ needs.prepare.outputs.ci_artifact_id }}
       BOUND_CI_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.ci_artifact_digest }}
       BOUND_TAG_OBJECT_SHA: ${{ needs.prepare.outputs.tag_object_sha }}
+      BOUND_RELEASE_NOTES_SHA256: ${{ needs.prepare.outputs.release_notes_sha256 }}
       WORKFLOW_RUN_ID: ${{ github.run_id }}
       EVENT_NAME: ${{ github.event_name }}
       REPOSITORY_CONTEXT: ${{ github.repository }}
@@ -209,9 +231,11 @@ jobs:
               --ci-artifact-id "$BOUND_CI_ARTIFACT_ID" \
               --ci-artifact-digest "$BOUND_CI_ARTIFACT_DIGEST" \
               --tag-object-sha "$BOUND_TAG_OBJECT_SHA" \
+              --release-notes-sha256 "$BOUND_RELEASE_NOTES_SHA256" \
               --draft-release-id "$DRAFT_RELEASE_ID" \
               --prepared-artifact-id "$PREPARED_ARTIFACT_ID" \
               --prepared-artifact-digest "$PREPARED_ARTIFACT_DIGEST" \
+              --release-notes release-bundle/control/RELEASE_NOTES-v0.2.0.md \
               --workflow-run-id "$WORKFLOW_RUN_ID"
 
       - name: Record human publication handoff
@@ -221,5 +245,7 @@ jobs:
             echo '## READY_FOR_HUMAN_PUBLICATION'
             echo
             echo 'The exact four assets were downloaded and rehashed from the existing draft.'
+            echo 'The exact draft title and canonical notes body were rechecked.'
             echo 'It did not create or publish a release, change draft metadata/state, or mutate a tag.'
+            echo 'A human must recheck governance, title, notes, tag, target, and assets immediately before publication.'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -69,8 +69,12 @@ def _write_bundle(root: Path) -> Path:
         for name in sorted(payload)
     )
     (assets / checksum).write_text(ledger, encoding="ascii", newline="\n")
-    for name in bundle.CONTROL_NAMES:
+    for name in bundle.CONTROL_SCRIPT_NAMES:
         (controls / name).write_text("# control\n", encoding="utf-8")
+    (controls / bundle.RELEASE_NOTES_NAME).write_text(
+        "# Trust Meter v0.2.0\n\nSynthetic release notes.\n",
+        encoding="utf-8", newline="\n",
+    )
     return target
 
 
@@ -128,6 +132,7 @@ def test_release_workflow_is_dispatch_only_promote_not_rebuild():
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow and "release.published" not in workflow
+    assert "inspect-rehearsal" in workflow and "RELEASE_MODE" in workflow
     assert "python -m build" not in workflow and "twine" not in workflow.lower()
     assert "pypi" not in workflow.lower() and "--clobber" not in workflow
     assert "environment:\n      name: github-release" in workflow
@@ -155,6 +160,9 @@ def test_release_workflow_carries_exact_prepare_bindings_into_upload():
     assert "tag_object_sha: ${{ steps.inspect.outputs.tag_object_sha }}" in workflow
     assert "--ci-run-attempt \"$BOUND_CI_RUN_ATTEMPT\"" in workflow
     assert "--prepared-artifact-digest \"$PREPARED_ARTIFACT_DIGEST\"" in workflow
+    assert "release_notes_sha256: ${{ steps.inspect.outputs.release_notes_sha256 }}" in workflow
+    assert "--release-notes-sha256 \"$BOUND_RELEASE_NOTES_SHA256\"" in workflow
+    assert "--release-notes release-bundle/control/RELEASE_NOTES-v0.2.0.md" in workflow
 
 
 def test_ci_artifact_boundary_uses_verified_node24_action_pins():
