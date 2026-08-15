@@ -7,10 +7,12 @@ Measure before you trust. Deterministic, local-first, evidence-backed trust scor
 ## Status
 
 ```
-483 tests, 833 assertion tokens, 0 warnings
+496 tests, 846 assertion tokens, 0 warnings
 100% module coverage, 100% documented
 Self-audit: 100/100 (7 metrics)
-CI: Python 3.9 / 3.10 / 3.11 / 3.12 — all green
+Python support: 3.11+
+CI contract: source tests on 3.11–3.14 across Ubuntu 24.04 and Windows 2025
+Release: 0.1.0 is repository metadata only and has not been published
 ```
 
 ## What it does
@@ -29,9 +31,14 @@ Scores a codebase across 7 dimensions:
 
 ## Install
 
+For development from a checkout:
+
 ```bash
 pip install -e .
 ```
+
+There is no published `0.1.0` wheel, PyPI release, GitHub Release, or release
+tag yet. Do not treat the version in `pyproject.toml` as publication evidence.
 
 ## Usage
 
@@ -164,8 +171,36 @@ handle, verifies the handle around the read, and checks the path again after
 the read. The exact-config digest identifies the same bytes that were parsed;
 these checks reduce leaf-swap exposure but do not prove immutable path identity
 across operating-system races, including Windows systems without `O_NOFOLLOW`.
-The published closed schema is
+The repository's closed schema is
 `schemas/trust-meter-measure-v1.schema.json`.
+
+## Packaging and CI boundary
+
+The repository-root schema remains canonical. The wheel contains a byte-for-byte
+copy at `trust_meter/schemas/trust-meter-measure-v1.schema.json`; a standalone
+schema release asset is intentionally deferred to a later release change.
+
+CI separates source verification from distribution verification:
+
+- source tests run directly from `src/` on Ubuntu 24.04 and Windows 2025 with
+  Python 3.11 through 3.14 and the fully hash-locked `requirements/test.txt`
+  dependency closure;
+- one Ubuntu 24.04 job builds the canonical wheel and sdist once with the
+  hash-locked `requirements/build.txt` backend closure;
+- the standard-library archive verifier checks safe member paths, wheel RECORD
+  hashes and sizes, package metadata, Python floor, version, LICENSE, and schema;
+- the sdist is rebuilt into an ephemeral wheel from a fresh backend environment
+  using only the hash-checked local wheelhouse while a Linux network namespace
+  denies network access; the rebuilt wheel is verified but is not published;
+- Ubuntu 24.04/Python 3.11 and Windows 2025/Python 3.14 jobs download the same
+  canonical wheel, install it with `--no-index --no-deps`, and exercise it from
+  outside the checkout with `PYTHONPATH` and `PYTHONHOME` removed; and
+- the stable `Required` job aggregates all source, build, verifier, and installed
+  asset jobs for branch protection.
+
+These checks qualify package construction and the installed CLI surface. They do
+not upgrade the measurement's authority: machine output remains advisory and
+`authority_effect` remains `none`.
 
 ## Custom Metrics
 
@@ -233,7 +268,7 @@ diff = api.compare(Path("project_a"), Path("project_b"))
 ## Test Results
 
 ```
-483 tests passed (Python 3.11, Windows local verification)
+496 tests passed (Python 3.11, Windows local verification)
 
 test_api.py                12 passed
 test_architecture.py       19 passed
@@ -257,6 +292,7 @@ test_locality.py            6 passed
 test_meter.py              15 passed
 test_module_trust.py       15 passed
 test_plugins.py            12 passed
+test_release_artifacts.py  13 passed
 test_remediation.py        19 passed
 test_report.py             11 passed
 test_reproducibility.py     6 passed
