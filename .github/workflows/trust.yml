@@ -6,36 +6,180 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
 jobs:
-  test-and-audit:
-    runs-on: ubuntu-latest
+  source-test:
+    name: Source tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        os: [ubuntu-24.04, windows-2025]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      PYTHONPATH: ${{ github.workspace }}/src
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest
-          pip install -e .
+      - name: Install hash-locked test dependencies
+        run: >-
+          python -m pip --isolated install
+          --only-binary=:all:
+          --require-hashes
+          -r requirements/test.txt
 
-      - name: Run tests
+      - name: Run source tests
         run: python -m pytest tests/ -v --tb=short
 
-      - name: Self-audit (trust-meter measures itself)
-        run: python -m trust_meter.cli . --phase "CI" --strict --json --output trust-report.json
+      - name: Self-audit source
+        run: >-
+          python -m trust_meter.cli .
+          --phase "CI"
+          --strict
+          --json
+          --output trust-report.json
 
       - name: Upload trust report
-        uses: actions/upload-artifact@v4
         if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: trust-report-py${{ matrix.python-version }}
+          name: trust-report-${{ matrix.os }}-py${{ matrix.python-version }}
           path: trust-report.json
+          if-no-files-found: error
+          retention-days: 7
+
+  build-package:
+    name: Build and verify distribution
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+
+      - name: Download hash-locked build dependencies
+        run: >-
+          python -m pip --isolated download
+          --only-binary=:all:
+          --require-hashes
+          --dest build-wheelhouse
+          -r requirements/build.txt
+
+      - name: Install build dependencies without an index
+        run: >-
+          python -m pip --isolated install
+          --no-index
+          --find-links build-wheelhouse
+          --only-binary=:all:
+          --require-hashes
+          -r requirements/build.txt
+
+      - name: Build canonical distribution once
+        run: python -m build --no-isolation --sdist --wheel --outdir dist
+
+      - name: Verify archives and rebuild the sdist offline
+        run: >-
+          sudo /usr/bin/unshare --net
+          -- /usr/bin/setpriv
+          --reuid "$(id -u)"
+          --regid "$(id -g)"
+          --clear-groups
+          --no-new-privs
+          /usr/bin/env
+          HOME="$HOME"
+          USER="$(id -un)"
+          LOGNAME="$(id -un)"
+          "$(command -v python)"
+          tools/release_artifacts.py
+          --dist-dir dist
+          --project-root .
+          --rebuild-sdist
+          --wheelhouse build-wheelhouse
+          --build-requirements requirements/build.txt
+
+      - name: Upload canonical distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  installed-wheel:
+    name: Installed wheel (${{ matrix.label }})
+    needs: build-package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Ubuntu 24.04 / Python 3.11
+            os: ubuntu-24.04
+            python-version: "3.11"
+          - label: Windows 2025 / Python 3.14
+            os: windows-2025
+            python-version: "3.14"
+
+    steps:
+      - name: Check out acceptance harness
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download canonical distribution
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Install and exercise the wheel outside the repository
+        run: >-
+          python tools/installed_wheel_test.py
+          --dist-dir dist
+          --project-root .
+
+  required:
+    name: Required
+    if: always()
+    needs:
+      - source-test
+      - build-package
+      - installed-wheel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    env:
+      SOURCE_TEST_RESULT: ${{ needs.source-test.result }}
+      BUILD_PACKAGE_RESULT: ${{ needs.build-package.result }}
+      INSTALLED_WHEEL_RESULT: ${{ needs.installed-wheel.result }}
+
+    steps:
+      - name: Require every release-contract job
+        run: |
+          test "$SOURCE_TEST_RESULT" = "success"
+          test "$BUILD_PACKAGE_RESULT" = "success"
+          test "$INSTALLED_WHEEL_RESULT" = "success"

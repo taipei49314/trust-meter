@@ -1,13 +1,14 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "trust-meter"
 version = "0.1.0"
 description = "Measure before you trust. Deterministic, local-first, evidence-backed trust scoring."
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = "MIT"
+license-files = ["LICENSE"]
 
 [project.scripts]
 trust-meter = "trust_meter.cli:main"
@@ -18,3 +19,20 @@ addopts = "-v --tb=short"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/trust_meter"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"schemas/trust-meter-measure-v1.schema.json" = "trust_meter/schemas/trust-meter-measure-v1.schema.json"
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    ".gitignore",
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+    "schemas/trust-meter-measure-v1.schema.json",
+    "src/trust_meter",
+]
+exclude = [
+    "/trust-report.html",
+    "/trust-report.md",
+]
