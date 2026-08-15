@@ -10,3 +10,5 @@ build/
 evidence/
 *.json
 !pyproject.toml
+!schemas/
+!schemas/*.json

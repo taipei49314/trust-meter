@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from trust_meter.metrics.locality import collect_locality
+from trust_meter.metrics.locality import _check_requirements, collect_locality
 
 
 def _make_project(files: dict[str, str]) -> Path:
@@ -32,6 +32,30 @@ def test_remote_dependency():
     result = collect_locality(d)
     assert result.passed is False
     assert any("requests" in e for e in result.evidence)
+
+
+def test_requirement_evidence_is_independent_of_glob_iteration_order(
+    tmp_path, monkeypatch
+):
+    (tmp_path / "requirements-z.txt").write_text("requests\n", encoding="utf-8")
+    (tmp_path / "requirements-a.txt").write_text("httpx\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("redis\n", encoding="utf-8")
+    expected = [
+        "pyproject.toml: redis is a remote-only dependency",
+        "requirements-a.txt: httpx is a remote-only dependency",
+        "requirements-z.txt: requests is a remote-only dependency",
+    ]
+
+    normal, _ = _check_requirements(tmp_path)
+    real_glob = Path.glob
+
+    def reversed_glob(path, pattern):
+        return iter(reversed(list(real_glob(path, pattern))))
+
+    monkeypatch.setattr(Path, "glob", reversed_glob)
+    reversed_order, _ = _check_requirements(tmp_path)
+
+    assert normal == reversed_order == expected
 
 
 def test_hardcoded_url():

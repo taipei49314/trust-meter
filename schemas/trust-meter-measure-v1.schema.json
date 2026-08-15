@@ -1,0 +1,235 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/taipei49314/trust-meter/schemas/trust-meter-measure-v1.schema.json",
+  "title": "trust-meter built-in static measurement v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tool",
+    "profile",
+    "configuration",
+    "result",
+    "authority_effect"
+  ],
+  "properties": {
+    "schema_version": { "const": "trust-meter.measure/v1" },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "trust-meter" },
+        "version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "analysis",
+        "collector_plugin_loading",
+        "collector_target_module_loading",
+        "collector_target_test_execution"
+      ],
+      "properties": {
+        "name": { "const": "builtin-static-v1" },
+        "analysis": { "const": "static_source" },
+        "collector_plugin_loading": { "const": "disabled" },
+        "collector_target_module_loading": { "const": "disabled" },
+        "collector_target_test_execution": { "const": "disabled" }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "sha256",
+        "byte_length",
+        "threshold",
+        "phase_gate",
+        "strict"
+      ],
+      "properties": {
+        "mode": { "enum": ["none", "exact_file"] },
+        "sha256": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          ]
+        },
+        "byte_length": { "type": "integer", "minimum": 0, "maximum": 65536 },
+        "threshold": { "type": "number", "minimum": 0, "maximum": 100 },
+        "phase_gate": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^(?: |[^\\s\\p{C}])*$"
+        },
+        "strict": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "none" } } },
+          "then": {
+            "properties": {
+              "sha256": { "type": "null" },
+              "byte_length": { "const": 0 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "exact_file" } } },
+          "then": {
+            "properties": {
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "byte_length": { "type": "integer", "minimum": 0, "maximum": 65536 }
+            }
+          }
+        }
+      ]
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "overall_score",
+        "threshold_met",
+        "all_metrics_passed",
+        "advisory_gate_met",
+        "metrics"
+      ],
+      "properties": {
+        "scope": { "const": "advisory_structural_measure" },
+        "overall_score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "threshold_met": { "type": "boolean" },
+        "all_metrics_passed": { "type": "boolean" },
+        "advisory_gate_met": { "type": "boolean" },
+        "metrics": {
+          "type": "array",
+          "minItems": 7,
+          "maxItems": 7,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/metric" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "const": "determinism" },
+                    "weight": { "const": 1 }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/metric" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "const": "locality" },
+                    "weight": { "const": 1 }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/metric" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "const": "evidence" },
+                    "weight": { "const": 1 }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/metric" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "const": "reproducibility" },
+                    "weight": { "const": 1 }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/metric" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "const": "architecture" },
+                    "weight": { "const": 1 }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/metric" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "const": "complexity" },
+                    "weight": { "const": 0.5 }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/metric" },
+                {
+                  "type": "object",
+                  "properties": {
+                    "name": { "const": "transparency" },
+                    "weight": { "const": 0.5 }
+                  }
+                }
+              ]
+            }
+          ],
+          "items": false
+        }
+      }
+    },
+    "authority_effect": { "const": "none" }
+  },
+  "$defs": {
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "score", "weight", "passed", "evidence", "details"],
+      "properties": {
+        "name": {
+          "enum": [
+            "determinism",
+            "locality",
+            "evidence",
+            "reproducibility",
+            "architecture",
+            "complexity",
+            "transparency"
+          ]
+        },
+        "score": { "type": "number", "minimum": 0, "maximum": 100 },
+        "weight": { "type": "number", "minimum": 0, "maximum": 100 },
+        "passed": { "type": "boolean" },
+        "evidence": {
+          "type": "array",
+          "maxItems": 50,
+          "items": { "type": "string" }
+        },
+        "details": { "type": "string" }
+      }
+    }
+  }
+}
