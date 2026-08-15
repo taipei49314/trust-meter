@@ -15,12 +15,14 @@ try:
         GITHUB_API_HOST,
         GITHUB_UPLOAD_HOST,
         PREPARED_ARTIFACT_NAME,
+        RELEASE_NAME,
         RELEASE_TAG,
         RELEASE_VERSION,
         REPOSITORY,
         ReleaseError,
         exact_sha,
         exact_sha256,
+        exact_release_notes,
         exact_version,
         github_origin,
         positive_integer,
@@ -38,12 +40,14 @@ except ModuleNotFoundError:
         GITHUB_API_HOST,
         GITHUB_UPLOAD_HOST,
         PREPARED_ARTIFACT_NAME,
+        RELEASE_NAME,
         RELEASE_TAG,
         RELEASE_VERSION,
         REPOSITORY,
         ReleaseError,
         exact_sha,
         exact_sha256,
+        exact_release_notes,
         exact_version,
         github_origin,
         positive_integer,
@@ -83,17 +87,24 @@ class GitHubWriter(GitHubReader, Protocol):
 
 
 @dataclass(frozen=True)
-class Candidate:
-    """Record the exact CI, artifact, tag, and draft release binding."""
+class CiCandidate:
+    """Record the exact master CI run and distribution artifact binding."""
 
     target_sha: str
     ci_run_id: int
     ci_run_attempt: int
     ci_artifact_id: int
     ci_artifact_digest: str
+
+
+@dataclass(frozen=True)
+class Candidate(CiCandidate):
+    """Add the exact tag, release notes, and draft release binding."""
+
     draft_release_id: int
     tag_object_sha: str
     tag_kind: str
+    release_notes_sha256: str
 
 
 def validate_dispatch_context(
@@ -210,9 +221,14 @@ def _release_assets(release: dict) -> list[dict]:
     return assets
 
 
-def _validate_draft(release: dict, target_sha: str, draft_release_id: int) -> list[dict]:
+def _validate_draft(
+    release: dict, target_sha: str, draft_release_id: int, release_notes: str,
+) -> list[dict]:
     require(release.get("id") == draft_release_id, "draft release ID mismatch")
     require(release.get("tag_name") == RELEASE_TAG, "draft release tag mismatch")
+    require(release.get("name") == RELEASE_NAME, "draft release name mismatch")
+    require(release.get("body") == release_notes,
+            "draft release body does not match canonical release notes")
     require(release.get("target_commitish") == target_sha,
             "draft release target_commitish must be the exact target SHA")
     require(release.get("draft") is True and release.get("prerelease") is False,
@@ -221,15 +237,13 @@ def _validate_draft(release: dict, target_sha: str, draft_release_id: int) -> li
     return _release_assets(release)
 
 
-def inspect_candidate(
+def inspect_ci_candidate(
     api: GitHubReader, *, target_sha: str, version: str, ci_run_id: int,
-    draft_release_id: int, require_empty: bool = True,
-) -> Candidate:
-    """Bind live master, an exact successful CI attempt, tag, and draft."""
+) -> CiCandidate:
+    """Bind live master and its exact successful CI distribution artifact."""
     exact_version(version)
     target_sha = exact_sha(target_sha, "target SHA")
     ci_run_id = positive_integer(ci_run_id, "CI run ID")
-    draft_release_id = positive_integer(draft_release_id, "draft release ID")
     _resolve_master(api, target_sha)
     run_path = f"/repos/{REPOSITORY}/actions/runs/{ci_run_id}"
     attempt = _validate_run(api.get(run_path), target_sha, ci_run_id)
@@ -239,12 +253,31 @@ def inspect_candidate(
     artifact_id, digest = _validate_ci_artifact(
         api.get(artifacts_path), target_sha, ci_run_id,
     )
+    return CiCandidate(target_sha, ci_run_id, attempt, artifact_id, digest)
+
+
+def inspect_candidate(
+    api: GitHubReader, *, target_sha: str, version: str, ci_run_id: int,
+    draft_release_id: int, release_notes: str, require_empty: bool = True,
+) -> Candidate:
+    """Bind live master, an exact successful CI attempt, tag, notes, and draft."""
+    release_notes = exact_release_notes(release_notes)
+    draft_release_id = positive_integer(draft_release_id, "draft release ID")
+    ci = inspect_ci_candidate(
+        api, target_sha=target_sha, version=version, ci_run_id=ci_run_id,
+    )
+    target_sha = ci.target_sha
     tag_object_sha, tag_kind = _resolve_tag(api, target_sha)
     release_path = f"/repos/{REPOSITORY}/releases/{draft_release_id}"
-    assets = _validate_draft(api.get(release_path), target_sha, draft_release_id)
+    assets = _validate_draft(
+        api.get(release_path), target_sha, draft_release_id, release_notes,
+    )
     require(not require_empty or not assets, "prepare requires an exact empty draft release")
-    return Candidate(target_sha, ci_run_id, attempt, artifact_id, digest,
-                     draft_release_id, tag_object_sha, tag_kind)
+    return Candidate(
+        ci.target_sha, ci.ci_run_id, ci.ci_run_attempt, ci.ci_artifact_id,
+        ci.ci_artifact_digest, draft_release_id, tag_object_sha, tag_kind,
+        sha256(release_notes.encode("utf-8")),
+    )
 
 
 def _validate_prepared_artifact(
@@ -299,7 +332,7 @@ def _upload_url(release: dict, draft_release_id: int) -> str:
 
 def _mutation_gate(
     api: GitHubReader, files: dict[str, Path], candidate: Candidate,
-    uploaded: set[str],
+    uploaded: set[str], release_notes: str,
 ) -> str:
     _resolve_master(api, candidate.target_sha)
     tag_sha, tag_kind = _resolve_tag(api, candidate.target_sha)
@@ -307,7 +340,9 @@ def _mutation_gate(
             "tag binding changed before draft mutation")
     path = f"/repos/{REPOSITORY}/releases/{candidate.draft_release_id}"
     release = api.get(path)
-    assets = _validate_draft(release, candidate.target_sha, candidate.draft_release_id)
+    assets = _validate_draft(
+        release, candidate.target_sha, candidate.draft_release_id, release_notes,
+    )
     require({asset.get("name") for asset in assets} == uploaded,
             "draft assets changed before create-only upload")
     for asset in assets:
@@ -317,10 +352,11 @@ def _mutation_gate(
 
 def _upload_from_empty(
     api: GitHubWriter, files: dict[str, Path], candidate: Candidate,
+    release_notes: str,
 ) -> None:
     uploaded: set[str] = set()
     for name in release_asset_names():
-        upload_url = _mutation_gate(api, files, candidate, uploaded)
+        upload_url = _mutation_gate(api, files, candidate, uploaded, release_notes)
         response = api.upload(upload_url, name, files[name].read_bytes())
         require(response.get("name") == name, "GitHub returned the wrong uploaded asset")
         uploaded.add(name)
@@ -341,7 +377,7 @@ def _download_and_rehash(
 
 def _final_remote_gate(
     api: GitHubReader, files: dict[str, Path], candidate: Candidate,
-    asset_ids: dict[str, int],
+    asset_ids: dict[str, int], release_notes: str,
 ) -> None:
     _resolve_master(api, candidate.target_sha)
     tag_sha, tag_kind = _resolve_tag(api, candidate.target_sha)
@@ -349,7 +385,9 @@ def _final_remote_gate(
             "tag binding changed during remote verification")
     path = f"/repos/{REPOSITORY}/releases/{candidate.draft_release_id}"
     release = api.get(path)
-    assets = _validate_draft(release, candidate.target_sha, candidate.draft_release_id)
+    assets = _validate_draft(
+        release, candidate.target_sha, candidate.draft_release_id, release_notes,
+    )
     remote = _remote_asset_map(assets, files)
     final_ids = {name: asset["id"] for name, asset in remote.items()}
     require(final_ids == asset_ids, "draft release asset identities changed during verification")
@@ -357,11 +395,15 @@ def _final_remote_gate(
 
 def _require_bound_candidate(
     candidate: Candidate, *, ci_artifact_id: int, ci_artifact_digest: str,
-    ci_run_attempt: int, tag_object_sha: str,
+    ci_run_attempt: int, tag_object_sha: str, release_notes_sha256: str,
 ) -> None:
-    expected = (ci_artifact_id, ci_artifact_digest, ci_run_attempt, tag_object_sha)
+    expected = (
+        ci_artifact_id, ci_artifact_digest, ci_run_attempt, tag_object_sha,
+        release_notes_sha256,
+    )
     actual = (candidate.ci_artifact_id, candidate.ci_artifact_digest,
-              candidate.ci_run_attempt, candidate.tag_object_sha)
+              candidate.ci_run_attempt, candidate.tag_object_sha,
+              candidate.release_notes_sha256)
     require(actual == expected, "prepare and upload candidate bindings differ")
 
 
@@ -370,20 +412,26 @@ def upload_draft_assets(
     ci_run_id: int, draft_release_id: int, ci_run_attempt: int,
     ci_artifact_id: int, ci_artifact_digest: str, tag_object_sha: str,
     prepared_artifact_id: int, prepared_artifact_digest: str,
-    workflow_run_id: int, approval: str,
+    workflow_run_id: int, approval: str, release_notes: str,
+    release_notes_sha256: str,
 ) -> None:
     """Create exact assets in one bound draft, then download and reverify."""
     require(approval == APPROVAL_VALUE, "release approval kill switch is not armed")
+    release_notes = exact_release_notes(release_notes)
     files = verify_release_bundle(bundle_dir, exact_version(version))
     candidate = inspect_candidate(
         api, target_sha=target_sha, version=version, ci_run_id=ci_run_id,
-        draft_release_id=draft_release_id, require_empty=False,
+        draft_release_id=draft_release_id, release_notes=release_notes,
+        require_empty=False,
     )
     _require_bound_candidate(
         candidate, ci_artifact_id=ci_artifact_id,
         ci_artifact_digest=exact_sha256(ci_artifact_digest, "CI artifact digest"),
         ci_run_attempt=positive_integer(ci_run_attempt, "CI run attempt"),
         tag_object_sha=exact_sha(tag_object_sha, "bound tag object SHA"),
+        release_notes_sha256=exact_sha256(
+            release_notes_sha256, "bound release notes digest",
+        ),
     )
     prepared_digest = exact_sha256(prepared_artifact_digest, "prepared artifact digest")
     _validate_prepared_artifact(
@@ -392,11 +440,15 @@ def upload_draft_assets(
         target_sha=candidate.target_sha,
     )
     path = f"/repos/{REPOSITORY}/releases/{candidate.draft_release_id}"
-    assets = _validate_draft(api.get(path), candidate.target_sha, candidate.draft_release_id)
+    assets = _validate_draft(
+        api.get(path), candidate.target_sha, candidate.draft_release_id, release_notes,
+    )
     if not assets:
-        _upload_from_empty(api, files, candidate)
-        assets = _validate_draft(api.get(path), candidate.target_sha,
-                                 candidate.draft_release_id)
+        _upload_from_empty(api, files, candidate, release_notes)
+        assets = _validate_draft(
+            api.get(path), candidate.target_sha, candidate.draft_release_id,
+            release_notes,
+        )
     remote = _remote_asset_map(assets, files)
     asset_ids = _download_and_rehash(api, remote, files)
-    _final_remote_gate(api, files, candidate, asset_ids)
+    _final_remote_gate(api, files, candidate, asset_ids, release_notes)

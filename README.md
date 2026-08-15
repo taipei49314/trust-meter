@@ -7,12 +7,13 @@ Measure before you trust. Deterministic, local-first, evidence-backed trust scor
 ## Status
 
 ```
-540 tests, 903 assertion tokens, 0 warnings
+554 tests, 930 assertion tokens, 0 warnings
 100% module coverage, 100% documented
 Self-audit: 100/100 (7 metrics)
 Python support: 3.11+
 CI contract: source tests on 3.11–3.14 across Ubuntu 24.04 and Windows 2025
-Release: 0.1.0 is repository metadata only and has not been published
+Source version: 0.2.0 release candidate, prepared before publication
+Publication evidence: exact v0.2.0 tag, target commit, Release state, and attached assets
 ```
 
 ## What it does
@@ -37,8 +38,10 @@ For development from a checkout:
 pip install -e .
 ```
 
-There is no published `0.1.0` wheel, PyPI release, GitHub Release, or release
-tag yet. Do not treat the version in `pyproject.toml` as publication evidence.
+The `0.2.0` source tree is a release candidate prepared before publication; a
+version string or this README is never publication evidence. Verify an actual
+GitHub Release, exact tag and target commit, and attached asset digests. PyPI is
+not a publication channel for this release.
 
 ## Usage
 
@@ -176,10 +179,13 @@ The repository's closed schema is
 
 ## Packaging and CI boundary
 
-The repository-root schema remains canonical. The wheel contains a byte-for-byte
-copy at `trust_meter/schemas/trust-meter-measure-v1.schema.json`. The controlled
-`0.2.0` GitHub release workflow will also promote that exact root file as the
-standalone `trust-meter-measure-v1.schema.json` release asset.
+The repository-root schema remains canonical. Its `$id` is the exact future
+immutable `v0.2.0` release-asset URL. The wheel contains a byte-for-byte copy at
+`trust_meter/schemas/trust-meter-measure-v1.schema.json`. The controlled GitHub
+release workflow promotes those same root bytes as the manually attached
+`trust-meter-measure-v1.schema.json`. Candidate checks bind the URL string and
+bytes without requiring the future URL to resolve; after publication, a human
+must anonymously fetch and hash the attachment.
 
 CI separates source verification from distribution verification:
 
@@ -207,67 +213,86 @@ not upgrade the measurement's authority: machine output remains advisory and
 
 `.github/workflows/release.yml` is a promotion workflow, not another builder. It
 is manual (`workflow_dispatch`) and must itself be dispatched from `master`. Its
-five explicit inputs are the exact version, full target commit SHA, successful
-post-merge Trust Meter CI run ID, an existing empty draft GitHub Release ID, and
-the `dry-run` or `upload-draft` mode. The workflow is deliberately locked to
-`0.2.0` / `v0.2.0`; while this repository still declares `0.1.0`, it cannot
-prepare or upload a candidate.
+five inputs are the exact version, full target commit SHA, successful post-merge
+Trust Meter CI run ID, a draft GitHub Release ID when the selected mode requires
+one, and `rehearsal`, `dry-run`, or `upload-draft`. The workflow is deliberately
+locked to `0.2.0` / `v0.2.0`.
 
-The read-only prepare job binds all of the following before it emits anything:
+Pre-tag `rehearsal` binds all of the following before it emits anything:
 
 - the trusted dispatch SHA, requested target, and live `master` SHA are identical;
 - the target is the latest attempt of a successful `master` push run of
   `.github/workflows/trust.yml`, with exactly the expected 12 successful jobs;
 - that run has one unique, unexpired, SHA-256-addressed `release-dist` Actions
   artifact whose run, branch, and SHA match;
-- the existing draft release ID is empty, targets the exact commit SHA, has the
-  exact derived tag, and remains an unpublished non-prerelease draft;
-- a lightweight tag resolves directly to the target commit, or one annotated tag
-  peels directly and unambiguously to it; and
 - the promoted wheel and sdist pass the repository's archive verifier against a
-  non-executed checkout of the exact candidate source.
+  non-executed checkout of the exact candidate source; and
+- source metadata, runtime version, duplicate-key-free schema `$id`, and the
+  canonical LF-only release-notes file match the exact `0.2.0` contract.
+
+`rehearsal` deliberately does not read or require a tag or draft Release, so the
+post-merge CI artifact can be exercised before creating the non-replaceable
+`v0.2.0` tag. `dry-run` and `upload-draft` add these exact gates:
+
+- the existing draft release ID is empty for prepare, targets the exact commit
+  SHA, has title `Trust Meter v0.2.0`, and has a body byte-for-byte equal to
+  `.github/RELEASE_NOTES-v0.2.0.md`;
+- the draft remains an unpublished non-prerelease and has the exact derived tag;
+  and
+- a lightweight tag resolves directly to the target commit, or one annotated tag
+  peels directly and unambiguously to it.
 
 It then adds the canonical schema and an LF-only, sorted `SHA256SUMS.txt`. The
 ledger contains lowercase SHA-256 rows for the wheel, sdist, and schema (not for
-itself). The exact public release asset set is:
+itself). The exact manually attached release asset set is:
 
 - `trust_meter-0.2.0-py3-none-any.whl`
 - `trust_meter-0.2.0.tar.gz`
 - `trust-meter-measure-v1.schema.json`
 - `SHA256SUMS.txt`
 
-`dry-run` stops after creating one ID/digest-addressed, content-immutable Actions
-bundle. That artifact is retained for seven days and can still expire or be
-deleted. `upload-draft` adds an environment-gated job with `contents: write`;
+Both `rehearsal` and `dry-run` stop after creating one ID/digest-addressed,
+content-immutable Actions bundle. That artifact is retained for seven days and
+can still expire or be deleted. `upload-draft` adds an environment-gated job with
+`contents: write`;
 that job checks out no repository and runs isolated Python with only the control
 scripts carried by the exact prepared artifact ID. It rebinds the CI artifact
 ID/digest, CI attempt, tag object, prepared artifact ID/digest/size/run/SHA, live
-`master`, and draft before mutation.
+`master`, canonical notes digest, and draft before mutation.
 
 Uploads are create-only: any partial, duplicate, extra, renamed, or mismatched
 draft asset fails closed. A partial upload failure is not automatically retryable;
 an administrator must discard that draft and create a new empty one before a new
 run. After upload, all four assets are downloaded through the GitHub API without
 forwarding authorization across the asset redirect and are rehashed. The final
-gate re-reads `master`, the tag, draft state, and exact asset IDs after those
-downloads. The release stays a draft and the successful handoff is labeled
-`READY_FOR_HUMAN_PUBLICATION`; the workflow never creates or publishes a release,
-changes release metadata or draft state, mutates a tag, or publishes to PyPI.
+gate re-reads `master`, the tag, exact draft title/body/state, and exact asset IDs
+after those downloads. The release stays a draft and the successful handoff is
+labeled `READY_FOR_HUMAN_PUBLICATION`; the workflow never creates or publishes a
+release, changes release metadata or draft state, mutates a tag, or publishes to
+PyPI.
 
-This workflow is not currently authorized for a real upload. Before setting the
-`github-release` environment secret `TRUST_METER_RELEASE_APPROVAL`, repository
-administrators must configure protected `master` and `v*` tag rulesets, required
-reviewers on that environment, and immutable releases. The secret value is the
-exact release-scoped kill switch
-`taipei49314/trust-meter:v0.2.0:upload-draft`. Until those settings exist and the
-separate `0.2.0` version/schema release blockers are closed, the production
-release status remains **NO-GO**.
+GitHub also displays generated source-code zip and tar archives. They are not API
+release attachments and are not the verified sdist; the canonical sdist is
+`trust_meter-0.2.0.tar.gz`. The tagged release-notes file is the canonical notes
+record. The GitHub body is an exactly checked navigation copy, not immutable
+authority.
+
+For a real upload to be authorized, repository administrators must independently
+verify protected `master` and `v*` tag rulesets, required reviewers on the
+`github-release` environment, and immutable releases. For this release, the
+`TRUST_METER_RELEASE_APPROVAL` secret value must be the exact release-scoped kill
+switch
+`taipei49314/trust-meter:v0.2.0:upload-draft`. Until those settings and all exact
+candidate, tag, draft, CI-run, and notes gates pass, no upload is authorized.
 
 The workflow deliberately does not use an administration token and therefore
 does not query or prove the ruleset or immutable-release settings. Environment
 approval and the release-scoped secret are manual preconditions and a kill
-switch, not evidence that repository governance is configured. A human may
-publish only after separately verifying those settings and the ready draft.
+switch, not evidence that repository governance is configured or that the secret
+has the intended scope. The final workflow read also cannot close the interval
+before a human clicks Publish. Immediately before publication, a human must
+separately recheck governance, tag/target, title, canonical notes body, draft
+state, exact attached asset IDs/digests, and anonymous downloads.
 
 ## Custom Metrics
 
@@ -335,7 +360,7 @@ diff = api.compare(Path("project_a"), Path("project_b"))
 ## Test Results
 
 ```
-540 tests passed (Python 3.11, Windows hash-locked local verification)
+554 tests passed (Python 3.11, Windows hash-locked local verification)
 
 test_api.py                12 passed
 test_architecture.py       19 passed
@@ -361,8 +386,9 @@ test_meter.py              15 passed
 test_module_trust.py       15 passed
 test_plugins.py            12 passed
 test_release_artifacts.py  13 passed
-test_release_bundle.py      6 passed
-test_release_promotion.py  27 passed
+test_release_bundle.py     11 passed
+test_release_candidate.py   4 passed
+test_release_promotion.py  32 passed
 test_remediation.py        19 passed
 test_report.py             11 passed
 test_reproducibility.py     6 passed

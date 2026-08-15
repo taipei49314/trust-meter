@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import re
 import tomllib
 import urllib.parse
@@ -13,14 +14,22 @@ from pathlib import Path
 REPOSITORY = "taipei49314/trust-meter"
 RELEASE_VERSION = "0.2.0"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
+RELEASE_NAME = f"Trust Meter {RELEASE_TAG}"
+HTTPS_SCHEME = "https"
+GITHUB_WEB_HOST = "github.com"
 DEFAULT_BRANCH = "master"
 CI_WORKFLOW_PATH = ".github/workflows/trust.yml"
 CI_ARTIFACT_NAME = "release-dist"
 PREPARED_ARTIFACT_NAME = "trust-meter-v0.2.0-release-bundle"
 SCHEMA_NAME = "trust-meter-measure-v1.schema.json"
+SCHEMA_ID = urllib.parse.urlunsplit(
+    (HTTPS_SCHEME, GITHUB_WEB_HOST,
+     f"/{REPOSITORY}/releases/download/{RELEASE_TAG}/{SCHEMA_NAME}", "", "")
+)
 CHECKSUM_NAME = "SHA256SUMS.txt"
-CONTROL_NAMES = ("github_release.py", "release_bundle.py", "release_promotion.py")
-HTTPS_SCHEME = "https"
+RELEASE_NOTES_NAME = "RELEASE_NOTES-v0.2.0.md"
+CONTROL_SCRIPT_NAMES = ("github_release.py", "release_bundle.py", "release_promotion.py")
+CONTROL_NAMES = (*CONTROL_SCRIPT_NAMES, RELEASE_NOTES_NAME)
 GITHUB_API_HOST = "api.github.com"
 GITHUB_UPLOAD_HOST = "uploads.github.com"
 APPROVAL_VALUE = f"{REPOSITORY}:{RELEASE_TAG}:upload-draft"
@@ -41,7 +50,7 @@ def require(condition: bool, message: str) -> None:
 
 def github_origin(host: str) -> str:
     """Construct a strict GitHub HTTPS origin without a path."""
-    require(host in {"github.com", GITHUB_API_HOST, GITHUB_UPLOAD_HOST},
+    require(host in {GITHUB_WEB_HOST, GITHUB_API_HOST, GITHUB_UPLOAD_HOST},
             "unexpected GitHub host")
     return urllib.parse.urlunsplit((HTTPS_SCHEME, host, "", "", ""))
 
@@ -190,6 +199,53 @@ def _runtime_version(project_root: Path) -> str:
     return versions[0]
 
 
+def exact_release_notes(raw: str) -> str:
+    """Require one bounded canonical LF-only release-notes body."""
+    require(0 < len(raw.encode("utf-8")) <= 64 * 1024,
+            "release notes must be nonempty and at most 64 KiB")
+    require(raw.endswith("\n") and "\r" not in raw and "\x00" not in raw,
+            "release notes must be NUL-free, LF-only, and LF-terminated")
+    return raw
+
+
+def read_release_notes(path: Path) -> str:
+    """Read one regular UTF-8 release-notes file without normalization."""
+    require(path.is_file() and not path.is_symlink(),
+            "release notes must be a regular file")
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise ReleaseError("release notes must be readable UTF-8") from error
+    require(text.encode("utf-8") == raw, "release notes UTF-8 bytes are not canonical")
+    return exact_release_notes(text)
+
+
+def _json_object_without_duplicates(pairs: list[tuple[str, object]]) -> dict:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        require(key not in result, f"candidate schema contains duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _candidate_schema_bytes(project_root: Path) -> bytes:
+    """Bind the candidate schema bytes to the immutable release-asset URL."""
+    path = project_root / "schemas" / SCHEMA_NAME
+    require(path.is_file() and not path.is_symlink(), "candidate schema must be regular")
+    try:
+        raw = path.read_bytes()
+        document = json.loads(
+            raw.decode("utf-8"), object_pairs_hook=_json_object_without_duplicates,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReleaseError("candidate schema must be valid UTF-8 JSON") from error
+    require(isinstance(document, dict), "candidate schema root must be an object")
+    require(document.get("$id") == SCHEMA_ID,
+            "candidate schema $id must match the exact release asset URL")
+    return raw
+
+
 def _exclusive_write(path: Path, data: bytes) -> None:
     with path.open("xb") as output:
         output.write(data)
@@ -208,6 +264,7 @@ def verify_release_bundle(bundle_dir: Path, version: str = RELEASE_VERSION) -> d
     control = regular_directory_files(entries["control"], "release control directory")
     require(set(control) == set(CONTROL_NAMES),
             "release control directory does not match the exact contract")
+    read_release_notes(control[RELEASE_NOTES_NAME])
     return verify_release_assets(entries["release-assets"], version)
 
 
@@ -219,6 +276,10 @@ def prepare_release_bundle(
     version = exact_version(version)
     require(_project_version(project_root) == version, "candidate version mismatch")
     require(_runtime_version(project_root) == version, "candidate runtime version mismatch")
+    schema_bytes = _candidate_schema_bytes(project_root)
+    release_notes = read_release_notes(
+        project_root / ".github" / RELEASE_NOTES_NAME,
+    ).encode("utf-8")
     wheel_name, sdist_name, _, _ = release_asset_names(version)
     dist_files = regular_directory_files(dist_dir, "promoted CI distribution")
     require(set(dist_files) == {wheel_name, sdist_name},
@@ -235,13 +296,12 @@ def prepare_release_bundle(
     control.mkdir()
     for name in (wheel_name, sdist_name):
         _exclusive_write(assets / name, dist_files[name].read_bytes())
-    schema = project_root / "schemas" / SCHEMA_NAME
-    require(schema.is_file() and not schema.is_symlink(), "candidate schema must be regular")
-    _exclusive_write(assets / SCHEMA_NAME, schema.read_bytes())
+    _exclusive_write(assets / SCHEMA_NAME, schema_bytes)
     current = regular_directory_files(assets, "release asset directory")
     _exclusive_write(assets / CHECKSUM_NAME, _checksum_bytes(current, version))
     source_dir = Path(__file__).resolve().parent
-    for name in CONTROL_NAMES:
+    for name in CONTROL_SCRIPT_NAMES:
         _exclusive_write(control / name, (source_dir / name).read_bytes())
+    _exclusive_write(control / RELEASE_NOTES_NAME, release_notes)
     verify_release_bundle(bundle_dir, version)
     return verify_release_assets(assets, version)

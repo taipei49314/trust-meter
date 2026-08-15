@@ -10,7 +10,7 @@ import pytest
 
 from tools import release_bundle as bundle
 from tools import release_promotion as promotion
-from tests.test_release_bundle import write_bundle
+from tests.test_release_bundle import SYNTHETIC_RELEASE_NOTES, write_bundle
 
 
 TARGET_SHA = "a" * 40
@@ -70,6 +70,8 @@ def _release(assets: list[dict] | None = None) -> dict:
     return {
         "id": DRAFT_RELEASE_ID,
         "tag_name": bundle.RELEASE_TAG,
+        "name": bundle.RELEASE_NAME,
+        "body": SYNTHETIC_RELEASE_NOTES,
         "target_commitish": TARGET_SHA,
         "draft": True,
         "prerelease": False,
@@ -115,6 +117,7 @@ class FakeApi:
         self.download_count = 0
         self.final_drift = ""
         self.drift_tag_after_upload = False
+        self.get_paths: list[str] = []
 
     def _tag_reference(self) -> dict:
         return {
@@ -126,6 +129,7 @@ class FakeApi:
         }
 
     def get(self, path: str) -> dict:
+        self.get_paths.append(path)
         run_path = f"/repos/{bundle.REPOSITORY}/actions/runs/{CI_RUN_ID}"
         if path == f"/repos/{bundle.REPOSITORY}/git/ref/heads/{bundle.DEFAULT_BRANCH}":
             return {"object": {"type": "commit", "sha": self.master_sha}}
@@ -180,6 +184,8 @@ class FakeApi:
                 self.master_sha = OTHER_SHA
             elif self.final_drift == "asset-id":
                 self.release["assets"][0]["id"] += 50
+            elif self.final_drift == "release-body":
+                self.release["body"] += "misleading extra text\n"
         return data
 
 
@@ -208,6 +214,10 @@ def _upload(api: FakeApi, target: Path, **overrides: object) -> None:
         "prepared_artifact_digest": PREPARED_DIGEST,
         "workflow_run_id": WORKFLOW_RUN_ID,
         "approval": bundle.APPROVAL_VALUE,
+        "release_notes": SYNTHETIC_RELEASE_NOTES,
+        "release_notes_sha256": hashlib.sha256(
+            SYNTHETIC_RELEASE_NOTES.encode("utf-8"),
+        ).hexdigest(),
     }
     arguments.update(overrides)
     promotion.upload_draft_assets(api, **arguments)
@@ -250,18 +260,34 @@ def test_inspect_accepts_exact_jobs_artifact_lightweight_tag_and_empty_draft():
     candidate = promotion.inspect_candidate(
         FakeApi(), target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
         ci_run_id=CI_RUN_ID, draft_release_id=DRAFT_RELEASE_ID,
+        release_notes=SYNTHETIC_RELEASE_NOTES,
     )
 
     assert candidate.tag_kind == "lightweight"
     assert candidate.ci_artifact_id == CI_ARTIFACT_ID
     assert candidate.ci_run_attempt == CI_RUN_ATTEMPT
+    assert candidate.release_notes_sha256 == hashlib.sha256(
+        SYNTHETIC_RELEASE_NOTES.encode("utf-8"),
+    ).hexdigest()
+
+
+def test_rehearsal_binds_ci_without_reading_tag_or_draft():
+    api = FakeApi()
+
+    candidate = promotion.inspect_ci_candidate(
+        api, target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
+        ci_run_id=CI_RUN_ID,
+    )
+
+    assert candidate.ci_artifact_id == CI_ARTIFACT_ID
+    assert not any("/git/ref/tags/" in path or "/releases/" in path for path in api.get_paths)
 
 
 def test_inspect_accepts_one_direct_annotated_tag():
     candidate = promotion.inspect_candidate(
         FakeApi(annotated=True), target_sha=TARGET_SHA,
         version=bundle.RELEASE_VERSION, ci_run_id=CI_RUN_ID,
-        draft_release_id=DRAFT_RELEASE_ID,
+        draft_release_id=DRAFT_RELEASE_ID, release_notes=SYNTHETIC_RELEASE_NOTES,
     )
 
     assert candidate.tag_kind == "annotated" and candidate.tag_object_sha == TAG_SHA
@@ -272,7 +298,7 @@ def test_inspect_rejects_nested_annotated_tag():
         promotion.inspect_candidate(
             FakeApi(annotated=True, nested=True), target_sha=TARGET_SHA,
             version=bundle.RELEASE_VERSION, ci_run_id=CI_RUN_ID,
-            draft_release_id=DRAFT_RELEASE_ID,
+            draft_release_id=DRAFT_RELEASE_ID, release_notes=SYNTHETIC_RELEASE_NOTES,
         )
 
     assert "directly to one target commit" in str(error.value)
@@ -293,6 +319,7 @@ def test_inspect_rejects_job_matrix_drift(fault):
         promotion.inspect_candidate(
             api, target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
             ci_run_id=CI_RUN_ID, draft_release_id=DRAFT_RELEASE_ID,
+            release_notes=SYNTHETIC_RELEASE_NOTES,
         )
 
     assert "CI job" in str(error.value) or "every exact CI job" in str(error.value)
@@ -306,12 +333,15 @@ def test_inspect_rejects_duplicate_or_wrong_bound_ci_artifact():
         promotion.inspect_candidate(
             api, target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
             ci_run_id=CI_RUN_ID, draft_release_id=DRAFT_RELEASE_ID,
+            release_notes=SYNTHETIC_RELEASE_NOTES,
         )
 
     assert "one unique release-dist" in str(error.value)
 
 
-@pytest.mark.parametrize("fault", ["master", "run", "draft-target", "nonempty"])
+@pytest.mark.parametrize(
+    "fault", ["master", "run", "draft-target", "draft-name", "draft-body", "nonempty"],
+)
 def test_inspect_rejects_mutable_or_inexact_candidate_state(fault):
     api = FakeApi()
     if fault == "master":
@@ -320,6 +350,10 @@ def test_inspect_rejects_mutable_or_inexact_candidate_state(fault):
         api.run["conclusion"] = "failure"
     elif fault == "draft-target":
         api.release["target_commitish"] = "master"
+    elif fault == "draft-name":
+        api.release["name"] = "Trust Meter 0.2.0 production-ready"
+    elif fault == "draft-body":
+        api.release["body"] += "misleading extra text\n"
     else:
         api.release["assets"] = [{"name": "partial"}]
 
@@ -327,6 +361,7 @@ def test_inspect_rejects_mutable_or_inexact_candidate_state(fault):
         promotion.inspect_candidate(
             api, target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
             ci_run_id=CI_RUN_ID, draft_release_id=DRAFT_RELEASE_ID,
+            release_notes=SYNTHETIC_RELEASE_NOTES,
         )
 
     assert str(error.value)
@@ -344,13 +379,15 @@ def test_upload_is_create_only_and_rehashes_exact_remote_bytes(tmp_path):
 
 
 @pytest.mark.parametrize("binding", ["ci_artifact_id", "ci_artifact_digest",
-                                      "ci_run_attempt", "tag_object_sha"])
+                                      "ci_run_attempt", "tag_object_sha",
+                                      "release_notes_sha256"])
 def test_upload_rejects_cross_job_binding_drift(tmp_path, binding):
     values = {
         "ci_artifact_id": CI_ARTIFACT_ID + 1,
         "ci_artifact_digest": "f" * 64,
         "ci_run_attempt": CI_RUN_ATTEMPT + 1,
         "tag_object_sha": OTHER_SHA,
+        "release_notes_sha256": "f" * 64,
     }
 
     with pytest.raises(bundle.ReleaseError) as error:
@@ -409,7 +446,7 @@ def test_upload_rejects_remote_download_hash_mismatch(tmp_path):
     assert "downloaded release asset" in str(error.value)
 
 
-@pytest.mark.parametrize("drift", ["master", "asset-id"])
+@pytest.mark.parametrize("drift", ["master", "asset-id", "release-body"])
 def test_upload_final_gate_rejects_post_download_toctou_drift(tmp_path, drift):
     api = FakeApi()
     target = write_bundle(tmp_path)
@@ -422,6 +459,7 @@ def test_upload_final_gate_rejects_post_download_toctou_drift(tmp_path, drift):
     expected = {
         "master": "live master no longer matches target SHA",
         "asset-id": "remote release asset API URL mismatch",
+        "release-body": "canonical release notes",
     }[drift]
     assert expected in str(error.value)
 

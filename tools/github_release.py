@@ -31,12 +31,15 @@ try:
         exact_sha256,
         parse_positive_integer,
         prepare_release_bundle,
+        read_release_notes,
         require,
         verify_release_bundle,
     )
     from tools.release_promotion import (
         Candidate,
+        CiCandidate,
         inspect_candidate,
+        inspect_ci_candidate,
         upload_draft_assets,
         validate_dispatch_context,
     )
@@ -52,12 +55,15 @@ except ModuleNotFoundError:
         exact_sha256,
         parse_positive_integer,
         prepare_release_bundle,
+        read_release_notes,
         require,
         verify_release_bundle,
     )
     from release_promotion import (  # type: ignore[no-redef]
         Candidate,
+        CiCandidate,
         inspect_candidate,
+        inspect_ci_candidate,
         upload_draft_assets,
         validate_dispatch_context,
     )
@@ -219,10 +225,14 @@ def _context_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workflow-sha", required=True)
 
 
-def _binding_arguments(parser: argparse.ArgumentParser) -> None:
+def _candidate_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--target-sha", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--ci-run-id", required=True)
+
+
+def _binding_arguments(parser: argparse.ArgumentParser) -> None:
+    _candidate_arguments(parser)
     parser.add_argument("--draft-release-id", required=True)
 
 
@@ -232,7 +242,12 @@ def _parser() -> argparse.ArgumentParser:
     inspect = commands.add_parser("inspect")
     _context_arguments(inspect)
     _binding_arguments(inspect)
+    inspect.add_argument("--release-notes", type=Path, required=True)
     inspect.add_argument("--github-output", type=Path, required=True)
+    rehearsal = commands.add_parser("inspect-rehearsal")
+    _context_arguments(rehearsal)
+    _candidate_arguments(rehearsal)
+    rehearsal.add_argument("--github-output", type=Path, required=True)
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--dist-dir", type=Path, required=True)
     prepare.add_argument("--project-root", type=Path, required=True)
@@ -249,8 +264,10 @@ def _parser() -> argparse.ArgumentParser:
         upload.add_argument(f"--{name}", required=True)
     upload.add_argument("--ci-artifact-digest", required=True)
     upload.add_argument("--tag-object-sha", required=True)
+    upload.add_argument("--release-notes-sha256", required=True)
     upload.add_argument("--prepared-artifact-digest", required=True)
     upload.add_argument("--bundle-dir", type=Path, required=True)
+    upload.add_argument("--release-notes", type=Path, required=True)
     return parser
 
 
@@ -263,17 +280,21 @@ def _validate_context(args: argparse.Namespace) -> None:
     )
 
 
-def _write_candidate(path: Path, candidate: Candidate) -> None:
+def _write_candidate(path: Path, candidate: CiCandidate) -> None:
     values = {
         "target_sha": candidate.target_sha,
         "ci_run_id": candidate.ci_run_id,
         "ci_run_attempt": candidate.ci_run_attempt,
         "ci_artifact_id": candidate.ci_artifact_id,
         "ci_artifact_digest": candidate.ci_artifact_digest,
-        "draft_release_id": candidate.draft_release_id,
-        "tag_object_sha": candidate.tag_object_sha,
-        "tag_kind": candidate.tag_kind,
     }
+    if isinstance(candidate, Candidate):
+        values.update({
+            "draft_release_id": candidate.draft_release_id,
+            "tag_object_sha": candidate.tag_object_sha,
+            "tag_kind": candidate.tag_kind,
+            "release_notes_sha256": candidate.release_notes_sha256,
+        })
     require(path.is_file() and not path.is_symlink(), "GitHub output must be a regular file")
     with path.open("a", encoding="utf-8", newline="\n") as output:
         for name, value in values.items():
@@ -288,9 +309,22 @@ def _run_inspect(args: argparse.Namespace) -> None:
         api, target_sha=args.target_sha, version=args.version,
         ci_run_id=parse_positive_integer(args.ci_run_id, "CI run ID"),
         draft_release_id=parse_positive_integer(args.draft_release_id, "draft release ID"),
+        release_notes=read_release_notes(args.release_notes),
     )
     _write_candidate(args.github_output, candidate)
     print("bound exact successful CI artifact, tag, and empty draft release")
+
+
+def _run_rehearsal_inspect(args: argparse.Namespace) -> None:
+    _validate_context(args)
+    token = _read_secrets(1)[0]
+    api = GitHubApi(token, args.api_url)
+    candidate = inspect_ci_candidate(
+        api, target_sha=args.target_sha, version=args.version,
+        ci_run_id=parse_positive_integer(args.ci_run_id, "CI run ID"),
+    )
+    _write_candidate(args.github_output, candidate)
+    print("bound exact successful CI artifact for pre-tag rehearsal")
 
 
 def _run_upload(args: argparse.Namespace) -> None:
@@ -311,6 +345,10 @@ def _run_upload(args: argparse.Namespace) -> None:
             args.prepared_artifact_digest, "prepared artifact digest"),
         workflow_run_id=parse_positive_integer(args.workflow_run_id, "workflow run ID"),
         approval=approval,
+        release_notes=read_release_notes(args.release_notes),
+        release_notes_sha256=exact_sha256(
+            args.release_notes_sha256, "bound release notes digest",
+        ),
     )
     print("READY_FOR_HUMAN_PUBLICATION: exact remote draft assets verified")
 
@@ -318,6 +356,8 @@ def _run_upload(args: argparse.Namespace) -> None:
 def _run(args: argparse.Namespace) -> None:
     if args.command == "inspect":
         _run_inspect(args)
+    elif args.command == "inspect-rehearsal":
+        _run_rehearsal_inspect(args)
     elif args.command == "prepare":
         prepare_release_bundle(args.dist_dir, args.project_root, args.bundle_dir, args.version)
         print("prepared exact release bundle")
