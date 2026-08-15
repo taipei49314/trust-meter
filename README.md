@@ -269,4 +269,4 @@ test_watch.py               9 passed
 
 ## License
 
-MIT
+[MIT](LICENSE)
