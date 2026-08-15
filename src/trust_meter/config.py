@@ -89,6 +89,14 @@ class ExactConfig:
     byte_length: int
 
 
+@dataclass
+class _StrictParseState:
+    config: Config = field(default_factory=Config)
+    section: str = ""
+    seen_sections: set[str] = field(default_factory=set)
+    seen_keys: set[tuple[str, str]] = field(default_factory=set)
+
+
 def find_config(start: Path) -> Path | None:
     """Walk up from start to find .trust-meter.toml."""
     current = start.resolve()
@@ -164,6 +172,14 @@ def parse_config_strict(text: str) -> Config:
     actually applied by the core CLI are admitted; the legacy parser remains
     backward compatible for automatic discovery.
     """
+    _validate_strict_config_text(text)
+    state = _StrictParseState()
+    for line_number, line in enumerate(text.splitlines(), 1):
+        _parse_strict_line(state, line, line_number)
+    return state.config
+
+
+def _validate_strict_config_text(text: str) -> None:
     if has_disallowed_text_character(text, allowed_whitespace=" \t\r\n"):
         raise ConfigError(
             "config contains non-ASCII whitespace or a Unicode category C character"
@@ -171,56 +187,70 @@ def parse_config_strict(text: str) -> Config:
     if len(text.encode("utf-8")) > MAX_CONFIG_BYTES:
         raise ConfigError(f"config exceeds {MAX_CONFIG_BYTES} bytes")
 
-    config = Config()
-    section = ""
-    seen_sections: set[str] = set()
-    seen_keys: set[tuple[str, str]] = set()
 
-    for line_number, line in enumerate(text.splitlines(), 1):
-        if len(line) > MAX_CONFIG_LINE_CHARS:
-            raise ConfigError(f"line {line_number} exceeds {MAX_CONFIG_LINE_CHARS} characters")
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-
-        section_match = re.fullmatch(r"\[([A-Za-z][A-Za-z0-9-]*)\]", stripped)
-        if section_match:
-            section = section_match.group(1)
-            if section != "trust-meter":
-                raise ConfigError(f"line {line_number}: unknown section [{section}]")
-            if section in seen_sections:
-                raise ConfigError(f"line {line_number}: duplicate section [{section}]")
-            seen_sections.add(section)
-            continue
-
-        if not section:
-            raise ConfigError(f"line {line_number}: key appears before a section")
-        kv_match = re.fullmatch(
-            r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.+)", stripped
+def _parse_strict_line(
+    state: _StrictParseState, line: str, line_number: int
+) -> None:
+    if len(line) > MAX_CONFIG_LINE_CHARS:
+        raise ConfigError(
+            f"line {line_number} exceeds {MAX_CONFIG_LINE_CHARS} characters"
         )
-        if not kv_match:
-            raise ConfigError(f"line {line_number}: malformed assignment")
-        key = kv_match.group(1)
-        value = kv_match.group(2).strip()
-        identity = (section, key)
-        if identity in seen_keys:
-            raise ConfigError(f"line {line_number}: duplicate key [{section}].{key}")
-        seen_keys.add(identity)
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return
+    section_match = re.fullmatch(r"\[([A-Za-z][A-Za-z0-9-]*)\]", stripped)
+    if section_match:
+        _admit_strict_section(state, section_match.group(1), line_number)
+        return
+    _apply_strict_assignment(state, stripped, line_number)
 
-        if key == "threshold":
-            config.threshold = _strict_float(
-                value, line_number, minimum=0.0, maximum=100.0
-            )
-        elif key == "phase_gate":
-            config.phase_gate = _strict_string(
-                value, line_number, maximum=MAX_PHASE_GATE_CHARS
-            )
-        elif key == "strict":
-            config.strict = _strict_bool(value, line_number)
-        else:
-            raise ConfigError(f"line {line_number}: unknown key [trust-meter].{key}")
 
-    return config
+def _admit_strict_section(
+    state: _StrictParseState, section: str, line_number: int
+) -> None:
+    if section != "trust-meter":
+        raise ConfigError(f"line {line_number}: unknown section [{section}]")
+    if section in state.seen_sections:
+        raise ConfigError(f"line {line_number}: duplicate section [{section}]")
+    state.seen_sections.add(section)
+    state.section = section
+
+
+def _apply_strict_assignment(
+    state: _StrictParseState, stripped: str, line_number: int
+) -> None:
+    if not state.section:
+        raise ConfigError(f"line {line_number}: key appears before a section")
+    match = re.fullmatch(
+        r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*=[ \t]*(.+)", stripped
+    )
+    if not match:
+        raise ConfigError(f"line {line_number}: malformed assignment")
+    key, value = match.group(1), match.group(2).strip()
+    identity = (state.section, key)
+    if identity in state.seen_keys:
+        raise ConfigError(
+            f"line {line_number}: duplicate key [{state.section}].{key}"
+        )
+    state.seen_keys.add(identity)
+    _apply_strict_value(state.config, key, value, line_number)
+
+
+def _apply_strict_value(
+    config: Config, key: str, value: str, line_number: int
+) -> None:
+    if key == "threshold":
+        config.threshold = _strict_float(
+            value, line_number, minimum=0.0, maximum=100.0
+        )
+    elif key == "phase_gate":
+        config.phase_gate = _strict_string(
+            value, line_number, maximum=MAX_PHASE_GATE_CHARS
+        )
+    elif key == "strict":
+        config.strict = _strict_bool(value, line_number)
+    else:
+        raise ConfigError(f"line {line_number}: unknown key [trust-meter].{key}")
 
 
 def load_config_exact(path: Path) -> ExactConfig:
@@ -229,6 +259,19 @@ def load_config_exact(path: Path) -> ExactConfig:
     There is deliberately no target-relative or ancestor fallback here.
     """
     raw_path = Path(path)
+    path_stat = _inspect_exact_config_path(raw_path)
+    descriptor = _open_exact_config(raw_path)
+    data, after = _read_exact_config(raw_path, descriptor, path_stat)
+    _validate_exact_config_path_after_read(raw_path, after)
+    text = _decode_exact_config(data)
+    return ExactConfig(
+        config=parse_config_strict(text),
+        sha256=hashlib.sha256(data).hexdigest(),
+        byte_length=len(data),
+    )
+
+
+def _inspect_exact_config_path(raw_path: Path):
     try:
         path_stat = raw_path.lstat()
     except FileNotFoundError as error:
@@ -240,20 +283,22 @@ def load_config_exact(path: Path) -> ExactConfig:
         raise ConfigError("config file must not be a symlink or reparse point")
     if not stat.S_ISREG(path_stat.st_mode):
         raise ConfigError("config path must name a regular file")
+    return path_stat
 
+
+def _open_exact_config(raw_path: Path) -> int:
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
-        descriptor = os.open(raw_path, flags)
+        return os.open(raw_path, flags)
     except OSError as error:
         raise ConfigError(f"cannot open config file {raw_path}: {error}") from error
 
+
+def _read_exact_config(raw_path: Path, descriptor: int, path_stat):
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
-            raise ConfigError("config path must remain a regular file")
-        if _stat_identity(path_stat) != _stat_identity(before):
-            raise ConfigError("config file changed before it was opened")
+        _validate_opened_exact_config(path_stat, before)
         with os.fdopen(descriptor, "rb", closefd=False) as handle:
             data = handle.read(MAX_CONFIG_BYTES + 1)
         after = os.fstat(descriptor)
@@ -264,11 +309,25 @@ def load_config_exact(path: Path) -> ExactConfig:
     finally:
         os.close(descriptor)
 
+    _validate_exact_config_read(data, before, after)
+    return data, after
+
+
+def _validate_opened_exact_config(path_stat, opened_stat) -> None:
+    if not stat.S_ISREG(opened_stat.st_mode):
+        raise ConfigError("config path must remain a regular file")
+    if _stat_identity(path_stat) != _stat_identity(opened_stat):
+        raise ConfigError("config file changed before it was opened")
+
+
+def _validate_exact_config_read(data: bytes, before, after) -> None:
     if len(data) > MAX_CONFIG_BYTES:
         raise ConfigError(f"config exceeds {MAX_CONFIG_BYTES} bytes")
     if _stat_identity(before) != _stat_identity(after) or before.st_size != len(data):
         raise ConfigError("config file changed while it was being read")
 
+
+def _validate_exact_config_path_after_read(raw_path: Path, after) -> None:
     try:
         post_stat = raw_path.lstat()
     except OSError as error:
@@ -280,16 +339,12 @@ def load_config_exact(path: Path) -> ExactConfig:
     ):
         raise ConfigError("config path changed after it was read")
 
+
+def _decode_exact_config(data: bytes) -> str:
     try:
-        text = data.decode("utf-8", errors="strict")
+        return data.decode("utf-8", errors="strict")
     except UnicodeDecodeError as error:
         raise ConfigError("config file is not strict UTF-8") from error
-
-    return ExactConfig(
-        config=parse_config_strict(text),
-        sha256=hashlib.sha256(data).hexdigest(),
-        byte_length=len(data),
-    )
 
 
 def _is_link_or_reparse(info) -> bool:

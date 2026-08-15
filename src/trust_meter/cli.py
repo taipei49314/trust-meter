@@ -14,6 +14,7 @@ import argparse
 import json
 import math
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from trust_meter import __version__
@@ -37,6 +38,16 @@ from trust_meter.metrics.complexity import collect_complexity
 
 JSON_V1_SCHEMA_VERSION = "trust-meter.measure/v1"
 BUILTIN_PROFILE = "builtin-static-v1"
+
+
+@dataclass(frozen=True)
+class _RunContext:
+    threshold: float
+    phase_gate: str
+    strict: bool
+    config_mode: str
+    config_sha256: str | None
+    config_byte_length: int
 
 
 def build_meter() -> TrustMeter:
@@ -165,8 +176,7 @@ def _validate_machine_values(threshold: float, phase_gate: str) -> None:
         raise ConfigError("machine phase gate is invalid")
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point: measure a directory and report trust score."""
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="trust-meter",
         description="Measure before you trust. Deterministic, evidence-backed trust scoring.",
@@ -202,6 +212,78 @@ def main(argv: list[str] | None = None) -> int:
         metavar="FILE",
         help="Load one bounded strict UTF-8 core config with no discovery fallback",
     )
+    return parser
+
+
+def _select_config(args) -> tuple[Config, str, str | None, int]:
+    """Resolve one config source without changing legacy discovery semantics."""
+    if args.no_config:
+        return Config(), "none", None, 0
+    if args.config is not None:
+        exact = load_config_exact(args.config)
+        return exact.config, "exact_file", exact.sha256, exact.byte_length
+    return load_config(args.target), "legacy_auto", None, 0
+
+
+def _prepare_run(args) -> _RunContext:
+    config, mode, sha256, byte_length = _select_config(args)
+    threshold = args.threshold if args.threshold is not None else config.threshold
+    phase_gate = args.phase if args.phase is not None else config.phase_gate
+    strict = args.strict or config.strict
+    if args.json_v1:
+        _validate_machine_values(threshold, phase_gate)
+        if threshold == 0:
+            threshold = 0.0
+    return _RunContext(
+        threshold, phase_gate, strict, mode, sha256, byte_length
+    )
+
+
+def _emit_machine_result(report: TrustReport, context: _RunContext) -> int:
+    payload = _json_v1_payload(
+        report,
+        threshold=context.threshold,
+        phase_gate=context.phase_gate,
+        strict=context.strict,
+        config_mode=context.config_mode,
+        config_sha256=context.config_sha256,
+        config_byte_length=context.config_byte_length,
+    )
+    try:
+        output = _canonical_json_v1_bytes(payload)
+    except (TypeError, ValueError) as error:
+        print(f"Error: machine result is not finite canonical JSON: {error}", file=sys.stderr)
+        return 2
+    _write_machine_stdout(output)
+    return 0 if payload["result"]["advisory_gate_met"] else 1
+
+
+def _emit_legacy_result(report: TrustReport, args, strict: bool) -> int:
+    if strict:
+        report.passed = report.passed and all(metric.passed for metric in report.metrics)
+    output = _format_output(report, args)
+    if args.output:
+        args.output.write_text(output, encoding="utf-8")
+        print(f"Report written to {args.output}", file=sys.stderr)
+    else:
+        print(output)
+    return 0 if report.passed else 1
+
+
+def _run(args, context: _RunContext) -> int:
+    report = build_meter().measure(
+        args.target,
+        threshold=context.threshold,
+        phase_gate=context.phase_gate,
+    )
+    if args.json_v1:
+        return _emit_machine_result(report, context)
+    return _emit_legacy_result(report, args, context.strict)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point: measure a directory and report trust score."""
+    parser = _build_parser()
 
     args = parser.parse_args(argv)
     _validate_json_v1_request(parser, args)
@@ -210,73 +292,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {args.target} is not a directory", file=sys.stderr)
         return 2 if args.json_v1 else 1
 
-    # Legacy callers retain automatic discovery. Explicit selectors never fall
-    # back to the target or any ancestor.
-    config_mode = "legacy_auto"
-    config_sha256 = None
-    config_byte_length = 0
     try:
-        if args.no_config:
-            config = Config()
-            config_mode = "none"
-        elif args.config is not None:
-            exact = load_config_exact(args.config)
-            config = exact.config
-            config_mode = "exact_file"
-            config_sha256 = exact.sha256
-            config_byte_length = exact.byte_length
-        else:
-            config = load_config(args.target)
+        context = _prepare_run(args)
     except ConfigError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 2
-
-    threshold = args.threshold if args.threshold is not None else config.threshold
-    phase_gate = args.phase if args.phase is not None else config.phase_gate
-    strict = args.strict or config.strict
-
-    if args.json_v1:
-        try:
-            _validate_machine_values(threshold, phase_gate)
-        except ConfigError as error:
-            print(f"Error: {error}", file=sys.stderr)
-            return 2
-        if threshold == 0:
-            threshold = 0.0
-
-    meter = build_meter()
-    report = meter.measure(args.target, threshold=threshold, phase_gate=phase_gate)
-
-    if strict and not args.json_v1:
-        report.passed = report.passed and all(m.passed for m in report.metrics)
-
-    if args.json_v1:
-        payload = _json_v1_payload(
-            report,
-            threshold=threshold,
-            phase_gate=phase_gate,
-            strict=strict,
-            config_mode=config_mode,
-            config_sha256=config_sha256,
-            config_byte_length=config_byte_length,
-        )
-        try:
-            output = _canonical_json_v1_bytes(payload)
-        except (TypeError, ValueError) as error:
-            print(f"Error: machine result is not finite canonical JSON: {error}", file=sys.stderr)
-            return 2
-        _write_machine_stdout(output)
-        return 0 if payload["result"]["advisory_gate_met"] else 1
-
-    output = _format_output(report, args)
-
-    if args.output:
-        args.output.write_text(output, encoding="utf-8")
-        print(f"Report written to {args.output}", file=sys.stderr)
-    else:
-        print(output)
-
-    return 0 if report.passed else 1
+    return _run(args, context)
 
 
 if __name__ == "__main__":

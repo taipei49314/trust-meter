@@ -7,7 +7,7 @@ Measure before you trust. Deterministic, local-first, evidence-backed trust scor
 ## Status
 
 ```
-483 tests, 841 assertion tokens, 0 warnings
+483 tests, 833 assertion tokens, 0 warnings
 100% module coverage, 100% documented
 Self-audit: 100/100 (7 metrics)
 CI: Python 3.9 / 3.10 / 3.11 / 3.12 — all green

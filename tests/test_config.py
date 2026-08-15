@@ -166,46 +166,77 @@ def test_parse_config_strict_accepts_core_effective_bounded_subset():
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "message"),
     [
-        '[unknown]\nvalue = 1\n',
-        '[trust-meter]\nunknown = 1\n',
-        '[weights]\ncustom_plugin = 1\n',
-        '[limits]\nunknown_limit = 1\n',
-        'threshold = 75\n',
-        '[trust-meter]\nthis is not an assignment\n',
-        '[trust-meter]\nthreshold = NaN\n',
-        '[trust-meter]\nthreshold = inf\n',
-        '[trust-meter]\nthreshold = 101\n',
-        '[trust-meter]\nstrict = yes\n',
-        '[skip]\npatterns = [vendor/*]\n',
-        '[trust-meter]\nthreshold = 75,\n',
-        '[trust-meter]\u2028threshold = 75\n',
-        '[trust-meter]\nthreshold\u00a0= 75\n',
-        '[trust-meter]\nphase_gate = "pre\u00a0flight"\n',
-        '[trust-meter]\nphase_gate = "pre\u0085flight"\n',
-        '[trust-meter]\nphase_gate = "pre\u200bflight"\n',
-        '[trust-meter]\nphase_gate = "pre\u202eflight"\n',
-        '[trust-meter]\nphase_gate = "pre\ud800flight"\n',
-        '[trust-meter]\nphase_gate = "pre\ue000flight"\n',
-        '[trust-meter]\nphase_gate = "pre\u0378flight"\n',
+        ('[unknown]\nvalue = 1\n', "line 1: unknown section [unknown]"),
+        (
+            '[trust-meter]\nunknown = 1\n',
+            "line 2: unknown key [trust-meter].unknown",
+        ),
+        ('[weights]\ncustom_plugin = 1\n', "line 1: unknown section [weights]"),
+        ('[limits]\nunknown_limit = 1\n', "line 1: unknown section [limits]"),
+        ('threshold = 75\n', "line 1: key appears before a section"),
+        (
+            '[trust-meter]\nthis is not an assignment\n',
+            "line 2: malformed assignment",
+        ),
+        ('[trust-meter]\nthreshold = NaN\n', "line 2: expected a decimal number"),
+        ('[trust-meter]\nthreshold = inf\n', "line 2: expected a decimal number"),
+        (
+            '[trust-meter]\nthreshold = 101\n',
+            "line 2: number must be finite and between 0 and 100",
+        ),
+        ('[trust-meter]\nstrict = yes\n', "line 2: boolean must be true or false"),
+        ('[skip]\npatterns = [vendor/*]\n', "line 1: unknown section [skip]"),
+        ('[trust-meter]\nthreshold = 75,\n', "line 2: expected a decimal number"),
+        (
+            '[trust-meter]\u2028threshold = 75\n',
+            "config contains non-ASCII whitespace or a Unicode category C character",
+        ),
+        (
+            '[trust-meter]\nthreshold\u00a0= 75\n',
+            "config contains non-ASCII whitespace or a Unicode category C character",
+        ),
+        *[
+            (
+                f'[trust-meter]\nphase_gate = "pre{character}flight"\n',
+                "config contains non-ASCII whitespace or a Unicode category C character",
+            )
+            for character in (
+                "\u00a0",
+                "\u0085",
+                "\u200b",
+                "\u202e",
+                "\ud800",
+                "\ue000",
+                "\u0378",
+            )
+        ],
     ],
 )
-def test_parse_config_strict_rejects_unknown_malformed_and_nonfinite(text):
-    with pytest.raises(ConfigError):
+def test_parse_config_strict_rejects_unknown_malformed_and_nonfinite(text, message):
+    with pytest.raises(ConfigError) as error:
         parse_config_strict(text)
+    assert str(error.value) == message
 
 
 @pytest.mark.parametrize(
-    "text",
+    ("text", "message"),
     [
-        '[trust-meter]\nthreshold = 70\nthreshold = 80\n',
-        '[trust-meter]\nthreshold = 70\n[trust-meter]\nstrict = true\n',
+        (
+            '[trust-meter]\nthreshold = 70\nthreshold = 80\n',
+            "line 3: duplicate key [trust-meter].threshold",
+        ),
+        (
+            '[trust-meter]\nthreshold = 70\n[trust-meter]\nstrict = true\n',
+            "line 3: duplicate section [trust-meter]",
+        ),
     ],
 )
-def test_parse_config_strict_rejects_duplicate_keys_and_sections(text):
-    with pytest.raises(ConfigError, match="duplicate"):
+def test_parse_config_strict_rejects_duplicate_keys_and_sections(text, message):
+    with pytest.raises(ConfigError) as error:
         parse_config_strict(text)
+    assert str(error.value) == message
 
 
 def test_parse_config_strict_allows_full_line_comments_but_not_inline_comments():
@@ -214,8 +245,9 @@ def test_parse_config_strict_allows_full_line_comments_but_not_inline_comments()
     )
     assert config.threshold == 75.0
 
-    with pytest.raises(ConfigError, match="decimal number"):
+    with pytest.raises(ConfigError) as error:
         parse_config_strict("[trust-meter]\nthreshold = 75 # not admitted\n")
+    assert str(error.value) == "line 2: expected a decimal number"
 
 
 def test_load_config_exact_hashes_the_bytes_it_parses(tmp_path):
@@ -254,34 +286,40 @@ def test_load_config_exact_rejects_lstat_open_identity_swap(tmp_path, monkeypatc
         )
 
     monkeypatch.setattr(Path, "lstat", swapped_first_lstat)
-    with pytest.raises(ConfigError, match="changed before it was opened"):
+    with pytest.raises(ConfigError) as error:
         load_config_exact(config_path)
+    assert str(error.value) == "config file changed before it was opened"
 
 
 def test_load_config_exact_core_profile_rejects_unapplied_sections(tmp_path):
     config_path = tmp_path / "unsupported.toml"
     config_path.write_text('[skip]\npatterns = ["vendor/*"]\n', encoding="utf-8")
-    with pytest.raises(ConfigError, match="unknown section"):
+    with pytest.raises(ConfigError) as error:
         load_config_exact(config_path)
+    assert str(error.value) == "line 1: unknown section [skip]"
 
 
 def test_load_config_exact_missing_is_an_error(tmp_path):
-    with pytest.raises(ConfigError, match="does not exist"):
-        load_config_exact(tmp_path / "missing.toml")
+    missing = tmp_path / "missing.toml"
+    with pytest.raises(ConfigError) as error:
+        load_config_exact(missing)
+    assert str(error.value) == f"config file does not exist: {missing}"
 
 
 def test_load_config_exact_requires_strict_utf8(tmp_path):
     config_path = tmp_path / "bad.toml"
     config_path.write_bytes(b"[trust-meter]\nphase_gate = \"\xff\"\n")
-    with pytest.raises(ConfigError, match="strict UTF-8"):
+    with pytest.raises(ConfigError) as error:
         load_config_exact(config_path)
+    assert str(error.value) == "config file is not strict UTF-8"
 
 
 def test_load_config_exact_is_size_bounded(tmp_path):
     config_path = tmp_path / "huge.toml"
     config_path.write_bytes(b"#" * (MAX_CONFIG_BYTES + 1))
-    with pytest.raises(ConfigError, match="exceeds"):
+    with pytest.raises(ConfigError) as error:
         load_config_exact(config_path)
+    assert str(error.value) == f"config exceeds {MAX_CONFIG_BYTES} bytes"
 
 
 def test_load_config_exact_rejects_symlink(tmp_path):
@@ -292,5 +330,6 @@ def test_load_config_exact_rejects_symlink(tmp_path):
         link.symlink_to(config_path)
     except OSError:
         pytest.skip("symlink creation is not available")
-    with pytest.raises(ConfigError, match="symlink|reparse"):
+    with pytest.raises(ConfigError) as error:
         load_config_exact(link)
+    assert str(error.value) == "config file must not be a symlink or reparse point"
