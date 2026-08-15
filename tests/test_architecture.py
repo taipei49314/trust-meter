@@ -119,6 +119,37 @@ def test_max_chain_depth_diamond():
     assert _max_chain_depth(graph) == 2
 
 
+def test_graph_results_do_not_depend_on_dict_or_set_iteration_order():
+    class IterationOrderedSet(set):
+        def __init__(self, values):
+            ordered_values = tuple(values)
+            super().__init__(ordered_values)
+            self._ordered_values = ordered_values
+
+        def __iter__(self):
+            return iter(self._ordered_values)
+
+    forward = {
+        "a": IterationOrderedSet(["b", "c"]),
+        "b": IterationOrderedSet(["a"]),
+        "c": IterationOrderedSet(["a"]),
+        "d": IterationOrderedSet(["b", "c"]),
+    }
+    reverse = {
+        "d": IterationOrderedSet(["c", "b"]),
+        "c": IterationOrderedSet(["a"]),
+        "b": IterationOrderedSet(["a"]),
+        "a": IterationOrderedSet(["c", "b"]),
+    }
+
+    assert _find_cycles(forward) == _find_cycles(reverse) == [
+        ["a", "b", "a"],
+        ["a", "c", "a"],
+    ]
+    assert _max_coupling(forward) == _max_coupling(reverse) == ("a", 2)
+    assert _max_chain_depth(forward) == _max_chain_depth(reverse)
+
+
 def test_build_local_graph():
     d = _make_project({
         "src/a.py": "import b\nimport os\n",

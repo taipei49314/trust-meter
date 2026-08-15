@@ -33,7 +33,7 @@ def _build_local_import_graph(target: Path) -> dict[str, set[str]]:
     """Build import graph with only local modules (not stdlib/external)."""
     # First pass: collect all local module names
     local_modules: set[str] = set()
-    for py_file in target.rglob("*.py"):
+    for py_file in sorted(target.rglob("*.py")):
         if _is_production(py_file, target):
             local_modules.add(py_file.stem)
 
@@ -78,7 +78,7 @@ def _find_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
         rec_stack.add(node)
         path.append(node)
 
-        for neighbor in graph.get(node, set()):
+        for neighbor in sorted(graph.get(node, set())):
             if neighbor not in visited:
                 dfs(neighbor)
             elif neighbor in rec_stack:
@@ -94,10 +94,11 @@ def _find_cycles(graph: dict[str, set[str]]) -> list[list[str]]:
         path.pop()
         rec_stack.discard(node)
 
-    for node in graph:
+    for node in sorted(graph):
         if node not in visited:
             dfs(node)
 
+    cycles.sort()
     return cycles
 
 
@@ -105,8 +106,9 @@ def _max_coupling(graph: dict[str, set[str]]) -> tuple[str, int]:
     """Find the module with the most outgoing imports."""
     if not graph:
         return ("", 0)
-    max_mod = max(graph, key=lambda k: len(graph[k]))
-    return (max_mod, len(graph[max_mod]))
+    max_count = max(len(dependencies) for dependencies in graph.values())
+    max_mod = min(module for module in graph if len(graph[module]) == max_count)
+    return (max_mod, max_count)
 
 
 def _max_chain_depth(graph: dict[str, set[str]]) -> int:
@@ -120,13 +122,13 @@ def _max_chain_depth(graph: dict[str, set[str]]) -> int:
             return 0  # cycle, don't recurse
         visiting.add(node)
         max_d = 0
-        for dep in graph.get(node, set()):
+        for dep in sorted(graph.get(node, set())):
             max_d = max(max_d, depth(dep, visiting) + 1)
         visiting.discard(node)
         memo[node] = max_d
         return max_d
 
-    return max(depth(n, set()) for n in graph) if graph else 0
+    return max(depth(node, set()) for node in sorted(graph)) if graph else 0
 
 
 def _compute_arch_score(cycles: list, max_count: int, depth: int) -> float:

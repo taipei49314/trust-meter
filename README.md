@@ -7,7 +7,7 @@ Measure before you trust. Deterministic, local-first, evidence-backed trust scor
 ## Status
 
 ```
-415 tests, 752 assertions, 0 warnings
+483 tests, 833 assertion tokens, 0 warnings
 100% module coverage, 100% documented
 Self-audit: 100/100 (7 metrics)
 CI: Python 3.9 / 3.10 / 3.11 / 3.12 — all green
@@ -41,6 +41,15 @@ python -m trust_meter.cli .
 
 # JSON output
 python -m trust_meter.cli . --json
+
+# Closed machine JSON (requires an explicit config boundary)
+python -m trust_meter.cli . --json-v1 --no-config
+
+# Or bind one strict config file by the bytes read and reported SHA-256
+python -m trust_meter.cli . --json-v1 --config ./measurement.toml
+
+# Package version
+python -m trust_meter.cli --version
 
 # JUnit XML for CI
 python -m trust_meter.cli . --junit
@@ -104,6 +113,59 @@ complexity = 0.5
 max_function_lines = 50
 max_imports_per_module = 15
 ```
+
+Legacy invocations with neither `--no-config` nor `--config` keep the original
+behavior of searching the target and its ancestors for `.trust-meter.toml`.
+The legacy parser retains its historical `skip`, `weights`, and `limits`
+surface, but the current core CLI does not apply those fields; they must not be
+treated as effective measurement inputs.
+`--no-config` performs no such discovery. `--config FILE` reads only the named
+regular file, with no fallback, and accepts only the core-effective
+`[trust-meter]` keys `threshold`, `phase_gate`, and `strict`. It rejects
+malformed, unknown, duplicate, non-finite, non-UTF-8, or oversized input.
+Full-line `#` comments are admitted. The bounded scalar grammar does not accept
+inline comments, escapes, or trailing commas. Machine phase labels admit an
+ordinary ASCII space but reject non-ASCII whitespace and every Unicode general
+category C character.
+
+## Machine contract v1
+
+`--json-v1` is additive; the legacy `--json` shape is unchanged. Machine v1:
+
+- requires exactly one of `--no-config` or `--config FILE`;
+- accepts only `[trust-meter]` `threshold`, `phase_gate`, and `strict` from an
+  exact config, because those are the config values the built-in core applies;
+- emits compact key-sorted UTF-8 JSON with one LF and schema version
+  `trust-meter.measure/v1`;
+- excludes the wall-clock timestamp and target path from the canonical result;
+- uses the fixed `builtin-static-v1` collectors, which do not discover plugins,
+  import target modules, or execute the target test suite;
+- fixes metric order and weights to determinism, locality, evidence,
+  reproducibility, and architecture at `1.0`, followed by complexity and
+  transparency at `0.5`; and
+- reports advisory measurements only, with `authority_effect` fixed to `none`.
+
+For machine v1, non-strict `advisory_gate_met` and exit status use only the
+threshold comparison; strict mode additionally requires every metric to pass.
+Both component facts remain separate in JSON. This is new protocol behavior;
+the legacy output and exit semantics are unchanged. `overall_score` is rounded
+to two decimal places before the machine threshold comparison, so the emitted
+score and `threshold_met` cannot contradict one another.
+Architecture file, node, dependency, and cycle traversal is sorted before
+machine evidence is emitted, removing set and discovery order from that metric.
+
+The collector contract does not prove that Python interpreter startup,
+`sitecustomize`, user-site packages, or the host runtime are isolated. A caller
+such as Evidence Workbench must qualify and contain that runtime separately;
+until then, execution remains fail closed there.
+
+The exact reader compares the pre-open path identity and state with the opened
+handle, verifies the handle around the read, and checks the path again after
+the read. The exact-config digest identifies the same bytes that were parsed;
+these checks reduce leaf-swap exposure but do not prove immutable path identity
+across operating-system races, including Windows systems without `O_NOFOLLOW`.
+The published closed schema is
+`schemas/trust-meter-measure-v1.schema.json`.
 
 ## Custom Metrics
 
@@ -171,40 +233,40 @@ diff = api.compare(Path("project_a"), Path("project_b"))
 ## Test Results
 
 ```
-415 tests passed in 4.23s
+483 tests passed (Python 3.11, Windows local verification)
 
-test_architecture.py     18 passed
-test_baseline.py         14 passed
-test_batch.py            10 passed
-test_blind_spots.py      52 passed
-test_cli.py               7 passed
-test_compare.py           8 passed
-test_complexity.py       17 passed
-test_config.py           17 passed
-test_determinism.py      22 passed
-test_diff.py             13 passed
-test_evidence.py          6 passed
-test_evidence_collector  14 passed
-test_file_trust.py       14 passed
-test_formats.py          16 passed
-test_git_trust.py        10 passed
-test_hooks.py            11 passed
-test_ignore.py           18 passed
-test_locality.py          5 passed
-test_meter.py            14 passed
-test_module_trust.py     15 passed
-test_plugins.py          12 passed
-test_remediation.py      19 passed
-test_report.py           11 passed
-test_reproducibility.py   6 passed
-test_self_audit.py        1 passed
-test_spec.py             19 passed
-test_transparency.py      8 passed
-test_trending.py         16 passed
-test_watch.py             9 passed
-test_api.py              12 passed
+test_api.py                12 passed
+test_architecture.py       19 passed
+test_baseline.py           14 passed
+test_batch.py              10 passed
+test_blind_spots.py        52 passed
+test_cli.py                41 passed
+test_compare.py             8 passed
+test_complexity.py         17 passed
+test_config.py             49 passed
+test_determinism.py        22 passed
+test_diff.py               13 passed
+test_evidence.py            6 passed
+test_evidence_collector.py 14 passed
+test_file_trust.py         14 passed
+test_formats.py            16 passed
+test_git_trust.py          10 passed
+test_hooks.py              11 passed
+test_ignore.py             18 passed
+test_locality.py            6 passed
+test_meter.py              15 passed
+test_module_trust.py       15 passed
+test_plugins.py            12 passed
+test_remediation.py        19 passed
+test_report.py             11 passed
+test_reproducibility.py     6 passed
+test_self_audit.py          1 passed
+test_spec.py               19 passed
+test_transparency.py        8 passed
+test_trending.py           16 passed
+test_watch.py               9 passed
 ```
 
 ## License
 
-MIT
+[MIT](LICENSE)

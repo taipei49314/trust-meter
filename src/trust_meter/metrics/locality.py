@@ -36,7 +36,12 @@ def _check_requirements(target: Path) -> tuple[list[str], list[str]]:
     violations: list[str] = []
     evidence: list[str] = []
 
-    req_files = list(target.glob("requirements*.txt")) + list(target.glob("pyproject.toml"))
+    req_files = sorted(
+        [
+            *target.glob("requirements*.txt"),
+            *target.glob("pyproject.toml"),
+        ]
+    )
     for req_file in req_files:
         try:
             text = req_file.read_text(encoding="utf-8")
