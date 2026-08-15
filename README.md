@@ -7,7 +7,7 @@ Measure before you trust. Deterministic, local-first, evidence-backed trust scor
 ## Status
 
 ```
-496 tests, 846 assertion tokens, 0 warnings
+540 tests, 903 assertion tokens, 0 warnings
 100% module coverage, 100% documented
 Self-audit: 100/100 (7 metrics)
 Python support: 3.11+
@@ -177,8 +177,9 @@ The repository's closed schema is
 ## Packaging and CI boundary
 
 The repository-root schema remains canonical. The wheel contains a byte-for-byte
-copy at `trust_meter/schemas/trust-meter-measure-v1.schema.json`; a standalone
-schema release asset is intentionally deferred to a later release change.
+copy at `trust_meter/schemas/trust-meter-measure-v1.schema.json`. The controlled
+`0.2.0` GitHub release workflow will also promote that exact root file as the
+standalone `trust-meter-measure-v1.schema.json` release asset.
 
 CI separates source verification from distribution verification:
 
@@ -201,6 +202,72 @@ CI separates source verification from distribution verification:
 These checks qualify package construction and the installed CLI surface. They do
 not upgrade the measurement's authority: machine output remains advisory and
 `authority_effect` remains `none`.
+
+### Controlled GitHub release boundary
+
+`.github/workflows/release.yml` is a promotion workflow, not another builder. It
+is manual (`workflow_dispatch`) and must itself be dispatched from `master`. Its
+five explicit inputs are the exact version, full target commit SHA, successful
+post-merge Trust Meter CI run ID, an existing empty draft GitHub Release ID, and
+the `dry-run` or `upload-draft` mode. The workflow is deliberately locked to
+`0.2.0` / `v0.2.0`; while this repository still declares `0.1.0`, it cannot
+prepare or upload a candidate.
+
+The read-only prepare job binds all of the following before it emits anything:
+
+- the trusted dispatch SHA, requested target, and live `master` SHA are identical;
+- the target is the latest attempt of a successful `master` push run of
+  `.github/workflows/trust.yml`, with exactly the expected 12 successful jobs;
+- that run has one unique, unexpired, SHA-256-addressed `release-dist` Actions
+  artifact whose run, branch, and SHA match;
+- the existing draft release ID is empty, targets the exact commit SHA, has the
+  exact derived tag, and remains an unpublished non-prerelease draft;
+- a lightweight tag resolves directly to the target commit, or one annotated tag
+  peels directly and unambiguously to it; and
+- the promoted wheel and sdist pass the repository's archive verifier against a
+  non-executed checkout of the exact candidate source.
+
+It then adds the canonical schema and an LF-only, sorted `SHA256SUMS.txt`. The
+ledger contains lowercase SHA-256 rows for the wheel, sdist, and schema (not for
+itself). The exact public release asset set is:
+
+- `trust_meter-0.2.0-py3-none-any.whl`
+- `trust_meter-0.2.0.tar.gz`
+- `trust-meter-measure-v1.schema.json`
+- `SHA256SUMS.txt`
+
+`dry-run` stops after creating one ID/digest-addressed, content-immutable Actions
+bundle. That artifact is retained for seven days and can still expire or be
+deleted. `upload-draft` adds an environment-gated job with `contents: write`;
+that job checks out no repository and runs isolated Python with only the control
+scripts carried by the exact prepared artifact ID. It rebinds the CI artifact
+ID/digest, CI attempt, tag object, prepared artifact ID/digest/size/run/SHA, live
+`master`, and draft before mutation.
+
+Uploads are create-only: any partial, duplicate, extra, renamed, or mismatched
+draft asset fails closed. A partial upload failure is not automatically retryable;
+an administrator must discard that draft and create a new empty one before a new
+run. After upload, all four assets are downloaded through the GitHub API without
+forwarding authorization across the asset redirect and are rehashed. The final
+gate re-reads `master`, the tag, draft state, and exact asset IDs after those
+downloads. The release stays a draft and the successful handoff is labeled
+`READY_FOR_HUMAN_PUBLICATION`; the workflow never creates or publishes a release,
+changes release metadata or draft state, mutates a tag, or publishes to PyPI.
+
+This workflow is not currently authorized for a real upload. Before setting the
+`github-release` environment secret `TRUST_METER_RELEASE_APPROVAL`, repository
+administrators must configure protected `master` and `v*` tag rulesets, required
+reviewers on that environment, and immutable releases. The secret value is the
+exact release-scoped kill switch
+`taipei49314/trust-meter:v0.2.0:upload-draft`. Until those settings exist and the
+separate `0.2.0` version/schema release blockers are closed, the production
+release status remains **NO-GO**.
+
+The workflow deliberately does not use an administration token and therefore
+does not query or prove the ruleset or immutable-release settings. Environment
+approval and the release-scoped secret are manual preconditions and a kill
+switch, not evidence that repository governance is configured. A human may
+publish only after separately verifying those settings and the ready draft.
 
 ## Custom Metrics
 
@@ -268,7 +335,7 @@ diff = api.compare(Path("project_a"), Path("project_b"))
 ## Test Results
 
 ```
-496 tests passed (Python 3.11, Windows local verification)
+540 tests passed (Python 3.11, Windows hash-locked local verification)
 
 test_api.py                12 passed
 test_architecture.py       19 passed
@@ -286,6 +353,7 @@ test_evidence_collector.py 14 passed
 test_file_trust.py         14 passed
 test_formats.py            16 passed
 test_git_trust.py          10 passed
+test_github_release.py     11 passed
 test_hooks.py              11 passed
 test_ignore.py             18 passed
 test_locality.py            6 passed
@@ -293,6 +361,8 @@ test_meter.py              15 passed
 test_module_trust.py       15 passed
 test_plugins.py            12 passed
 test_release_artifacts.py  13 passed
+test_release_bundle.py      6 passed
+test_release_promotion.py  27 passed
 test_remediation.py        19 passed
 test_report.py             11 passed
 test_reproducibility.py     6 passed
