@@ -110,6 +110,27 @@ def _write_bundle(root: Path) -> Path:
     return target
 
 
+def _write_executable_bundle(root: Path) -> Path:
+    target = _write_bundle(root)
+    controls = target / "control"
+    for name in bundle.CONTROL_SCRIPT_NAMES:
+        (controls / name).write_bytes((Path("tools") / name).read_bytes())
+    return target
+
+
+def _tree_snapshot(root: Path) -> tuple[tuple[str, str, str], ...]:
+    entries = []
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        if path.is_dir() and not path.is_symlink():
+            entries.append((relative, "directory", ""))
+        elif path.is_file() and not path.is_symlink():
+            entries.append((relative, "file", hashlib.sha256(path.read_bytes()).hexdigest()))
+        else:
+            entries.append((relative, "non-regular", ""))
+    return tuple(sorted(entries))
+
+
 @pytest.mark.parametrize("url", [
     "http://api.github.com/path",
     "https://example.invalid/path",
@@ -191,6 +212,49 @@ def test_isolated_control_script_can_verify_a_prepared_bundle(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "verified exact release bundle" in result.stdout
+
+
+def test_downloaded_release_controls_disable_bytecode_self_contamination(tmp_path):
+    contaminated = _write_executable_bundle(tmp_path / "old-command")
+
+    old_result = subprocess.run(
+        [sys.executable, "-I", str(contaminated / "control" / "github_release.py"),
+         "verify-bundle", "--bundle-dir", str(contaminated),
+         "--version", bundle.RELEASE_VERSION],
+        text=True, capture_output=True, check=False,
+    )
+
+    assert old_result.returncode == 1
+    assert (contaminated / "control" / "__pycache__").is_dir()
+    assert "contains a non-regular entry: __pycache__" in old_result.stderr
+
+    isolated = _write_executable_bundle(tmp_path / "no-bytecode-command")
+    isolated_snapshot = _tree_snapshot(isolated)
+    fixed_result = subprocess.run(
+        [sys.executable, "-I", "-B", str(isolated / "control" / "github_release.py"),
+         "verify-bundle", "--bundle-dir", str(isolated),
+         "--version", bundle.RELEASE_VERSION],
+        text=True, capture_output=True, check=False,
+    )
+
+    assert fixed_result.returncode == 0, fixed_result.stderr
+    assert "verified exact release bundle" in fixed_result.stdout
+    assert not (isolated / "control" / "__pycache__").exists()
+    assert _tree_snapshot(isolated) == isolated_snapshot
+
+    workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+    downloaded_control_invocations = [
+        line.strip() for line in workflow.splitlines()
+        if "python " in line and "release-bundle/control/" in line
+    ]
+    assert downloaded_control_invocations == [
+        "python -I -B release-bundle/control/github_release.py inspect-draft \\",
+        "python -I -B release-bundle/control/github_release.py upload-draft \\",
+    ]
+    assert "python -I release-bundle/control/" not in workflow
+    assert workflow.count(
+        "python -I -B release-bundle/control/github_release.py"
+    ) == 2
 
 
 def test_release_workflow_is_dispatch_only_promotion_not_rebuild():

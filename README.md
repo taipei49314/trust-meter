@@ -7,7 +7,7 @@ Measure before you trust. Deterministic, local-first, evidence-backed trust scor
 ## Status
 
 ```
-573 tests, 960 assertion tokens, 0 warnings
+574 tests, 970 assertion tokens, 0 warnings
 100% module coverage, 100% documented
 Self-audit: 100/100 (7 metrics)
 Python support: 3.11+
@@ -375,7 +375,7 @@ diff = api.compare(Path("project_a"), Path("project_b"))
 ## Test Results
 
 ```
-573 tests passed (Python 3.11, Windows hash-locked local verification)
+574 tests passed (Python 3.11, Windows hash-locked local verification)
 
 test_api.py                12 passed
 test_architecture.py       19 passed
@@ -393,7 +393,7 @@ test_evidence_collector.py 14 passed
 test_file_trust.py         14 passed
 test_formats.py            16 passed
 test_git_trust.py          10 passed
-test_github_release.py     16 passed
+test_github_release.py     17 passed
 test_hooks.py              11 passed
 test_ignore.py             18 passed
 test_locality.py            6 passed
