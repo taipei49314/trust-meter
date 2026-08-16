@@ -1,4 +1,4 @@
-"""Tests for live GitHub candidate binding and draft-only promotion gates."""
+"""Tests for split read-only preparation and protected draft promotion gates."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from tools import release_promotion as promotion
 from tests.test_release_bundle import SYNTHETIC_RELEASE_NOTES, write_bundle
 
 
-TARGET_SHA = "a" * 40
+SUBJECT_SHA = "a" * 40
 OTHER_SHA = "e" * 40
 TAG_SHA = "b" * 40
 CI_RUN_ID = 101
@@ -22,8 +22,10 @@ CI_ARTIFACT_ID = 202
 CI_DIGEST = "d" * 64
 DRAFT_RELEASE_ID = 303
 PREPARED_ARTIFACT_ID = 404
-WORKFLOW_RUN_ID = 505
+PREPARED_WORKFLOW_RUN_ID = 505
 PREPARED_DIGEST = "c" * 64
+PREPARED_SIZE = 456
+NOTES_DIGEST = hashlib.sha256(SYNTHETIC_RELEASE_NOTES.encode("utf-8")).hexdigest()
 
 
 def _run() -> dict:
@@ -35,7 +37,7 @@ def _run() -> dict:
         "conclusion": "success",
         "event": "push",
         "head_branch": bundle.DEFAULT_BRANCH,
-        "head_sha": TARGET_SHA,
+        "head_sha": SUBJECT_SHA,
         "path": bundle.CI_WORKFLOW_PATH,
         "run_attempt": CI_RUN_ATTEMPT,
     }
@@ -57,7 +59,7 @@ def _ci_artifacts(*, duplicate: bool = False) -> dict:
         "workflow_run": {
             "id": CI_RUN_ID,
             "head_branch": bundle.DEFAULT_BRANCH,
-            "head_sha": TARGET_SHA,
+            "head_sha": SUBJECT_SHA,
         },
         "digest": f"sha256:{CI_DIGEST}",
         "size_in_bytes": 123,
@@ -72,10 +74,11 @@ def _release(assets: list[dict] | None = None) -> dict:
         "tag_name": bundle.RELEASE_TAG,
         "name": bundle.RELEASE_NAME,
         "body": SYNTHETIC_RELEASE_NOTES,
-        "target_commitish": TARGET_SHA,
+        "target_commitish": SUBJECT_SHA,
         "draft": True,
         "prerelease": False,
         "published_at": None,
+        "immutable": False,
         "upload_url": (
             f"https://uploads.github.com/repos/{bundle.REPOSITORY}/releases/"
             f"{DRAFT_RELEASE_ID}/assets{{?name,label}}"
@@ -89,11 +92,11 @@ def _prepared_artifact() -> dict:
         "id": PREPARED_ARTIFACT_ID,
         "name": bundle.PREPARED_ARTIFACT_NAME,
         "expired": False,
-        "size_in_bytes": 456,
+        "size_in_bytes": PREPARED_SIZE,
         "workflow_run": {
-            "id": WORKFLOW_RUN_ID,
+            "id": PREPARED_WORKFLOW_RUN_ID,
             "head_branch": bundle.DEFAULT_BRANCH,
-            "head_sha": TARGET_SHA,
+            "head_sha": SUBJECT_SHA,
         },
         "digest": f"sha256:{PREPARED_DIGEST}",
     }
@@ -105,8 +108,8 @@ class FakeApi:
     def __init__(self, *, annotated: bool = False, nested: bool = False) -> None:
         self.annotated = annotated
         self.nested = nested
-        self.master_sha = TARGET_SHA
-        self.tag_target = TARGET_SHA
+        self.master_sha = SUBJECT_SHA
+        self.tag_target = SUBJECT_SHA
         self.run = _run()
         self.jobs = _jobs()
         self.ci_artifacts = _ci_artifacts()
@@ -133,13 +136,15 @@ class FakeApi:
         run_path = f"/repos/{bundle.REPOSITORY}/actions/runs/{CI_RUN_ID}"
         if path == f"/repos/{bundle.REPOSITORY}/git/ref/heads/{bundle.DEFAULT_BRANCH}":
             return {"object": {"type": "commit", "sha": self.master_sha}}
-        if path == run_path:
+        if path.startswith(f"/repos/{bundle.REPOSITORY}/actions/runs/") \
+                and "/attempts/" not in path and not path.endswith("/artifacts?name=release-dist&per_page=100"):
             return copy.deepcopy(self.run)
         if path == f"{run_path}/attempts/{CI_RUN_ATTEMPT}/jobs?per_page=100":
             return copy.deepcopy(self.jobs)
         if path == f"{run_path}/artifacts?name={bundle.CI_ARTIFACT_NAME}&per_page=100":
             return copy.deepcopy(self.ci_artifacts)
-        if path == f"/repos/{bundle.REPOSITORY}/releases/{DRAFT_RELEASE_ID}":
+        if path.startswith(f"/repos/{bundle.REPOSITORY}/releases/") \
+                and "/assets/" not in path:
             return copy.deepcopy(self.release)
         if path == f"/repos/{bundle.REPOSITORY}/git/ref/tags/{bundle.RELEASE_TAG}":
             return self._tag_reference()
@@ -147,7 +152,7 @@ class FakeApi:
             object_type = "tag" if self.nested else "commit"
             return {"tag": bundle.RELEASE_TAG,
                     "object": {"type": object_type, "sha": self.tag_target}}
-        if path == f"/repos/{bundle.REPOSITORY}/actions/artifacts/{PREPARED_ARTIFACT_ID}":
+        if path.startswith(f"/repos/{bundle.REPOSITORY}/actions/artifacts/"):
             return copy.deepcopy(self.prepared_artifact)
         raise AssertionError(f"unexpected API path: {path}")
 
@@ -186,6 +191,8 @@ class FakeApi:
                 self.release["assets"][0]["id"] += 50
             elif self.final_drift == "release-body":
                 self.release["body"] += "misleading extra text\n"
+            elif self.final_drift == "prepared-size":
+                self.prepared_artifact["size_in_bytes"] += 1
         return data
 
 
@@ -199,42 +206,64 @@ def _prime_remote_assets(api: FakeApi, target: Path) -> None:
         api.upload(upload_url, name, files[name].read_bytes())
 
 
+def _inspect(api: FakeApi, target: Path, **overrides: object) -> promotion.Candidate:
+    arguments = {
+        "mode": bundle.DRAFT_REHEARSAL_MODE,
+        "bundle_dir": target,
+        "subject_sha": SUBJECT_SHA,
+        "version": bundle.RELEASE_VERSION,
+        "ci_run_id": CI_RUN_ID,
+        "ci_run_attempt": CI_RUN_ATTEMPT,
+        "ci_artifact_id": CI_ARTIFACT_ID,
+        "ci_artifact_digest": CI_DIGEST,
+        "draft_release_id": DRAFT_RELEASE_ID,
+        "prepared_artifact_id": PREPARED_ARTIFACT_ID,
+        "prepared_artifact_digest": PREPARED_DIGEST,
+        "prepared_artifact_size": PREPARED_SIZE,
+        "prepared_workflow_run_id": PREPARED_WORKFLOW_RUN_ID,
+        "release_notes": SYNTHETIC_RELEASE_NOTES,
+        "release_notes_sha256": NOTES_DIGEST,
+    }
+    arguments.update(overrides)
+    return promotion.inspect_draft_candidate(api, **arguments)
+
+
 def _upload(api: FakeApi, target: Path, **overrides: object) -> None:
     arguments = {
         "bundle_dir": target,
-        "target_sha": TARGET_SHA,
+        "subject_sha": SUBJECT_SHA,
         "version": bundle.RELEASE_VERSION,
         "ci_run_id": CI_RUN_ID,
         "draft_release_id": DRAFT_RELEASE_ID,
         "ci_run_attempt": CI_RUN_ATTEMPT,
         "ci_artifact_id": CI_ARTIFACT_ID,
         "ci_artifact_digest": CI_DIGEST,
-        "tag_object_sha": TARGET_SHA,
+        "tag_object_sha": SUBJECT_SHA,
+        "tag_kind": "lightweight",
         "prepared_artifact_id": PREPARED_ARTIFACT_ID,
         "prepared_artifact_digest": PREPARED_DIGEST,
-        "workflow_run_id": WORKFLOW_RUN_ID,
+        "prepared_artifact_size": PREPARED_SIZE,
+        "prepared_workflow_run_id": PREPARED_WORKFLOW_RUN_ID,
         "approval": bundle.APPROVAL_VALUE,
         "release_notes": SYNTHETIC_RELEASE_NOTES,
-        "release_notes_sha256": hashlib.sha256(
-            SYNTHETIC_RELEASE_NOTES.encode("utf-8"),
-        ).hexdigest(),
+        "release_notes_sha256": NOTES_DIGEST,
     }
     arguments.update(overrides)
     promotion.upload_draft_assets(api, **arguments)
 
 
-def test_dispatch_context_binds_trusted_workflow_sha_to_master_target():
+def test_dispatch_context_binds_control_and_subject_sha():
     promotion.validate_dispatch_context(
         event_name="workflow_dispatch", repository=bundle.REPOSITORY,
         ref="refs/heads/master", ref_name="master", ref_type="branch",
         server_url="https://github.com", api_url="https://api.github.com",
-        workflow_sha=TARGET_SHA, target_sha=TARGET_SHA,
+        control_sha=SUBJECT_SHA, subject_sha=SUBJECT_SHA,
     )
 
-    assert TARGET_SHA == "a" * 40
+    assert SUBJECT_SHA == "a" * 40
 
 
-@pytest.mark.parametrize("field", ["ref", "workflow_sha", "api_url"])
+@pytest.mark.parametrize("field", ["ref", "control_sha", "api_url"])
 def test_dispatch_context_rejects_wrong_ref_sha_or_origin(field):
     values = {
         "event_name": "workflow_dispatch",
@@ -244,10 +273,10 @@ def test_dispatch_context_rejects_wrong_ref_sha_or_origin(field):
         "ref_type": "branch",
         "server_url": "https://github.com",
         "api_url": "https://api.github.com",
-        "workflow_sha": TARGET_SHA,
-        "target_sha": TARGET_SHA,
+        "control_sha": SUBJECT_SHA,
+        "subject_sha": SUBJECT_SHA,
     }
-    values[field] = {"ref": "refs/heads/feature", "workflow_sha": OTHER_SHA,
+    values[field] = {"ref": "refs/heads/feature", "control_sha": OTHER_SHA,
                      "api_url": "https://example.invalid"}[field]
 
     with pytest.raises(bundle.ReleaseError) as error:
@@ -256,154 +285,174 @@ def test_dispatch_context_rejects_wrong_ref_sha_or_origin(field):
     assert str(error.value)
 
 
-def test_inspect_accepts_exact_jobs_artifact_lightweight_tag_and_empty_draft():
-    candidate = promotion.inspect_candidate(
-        FakeApi(), target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
-        ci_run_id=CI_RUN_ID, draft_release_id=DRAFT_RELEASE_ID,
-        release_notes=SYNTHETIC_RELEASE_NOTES,
-    )
-
-    assert candidate.tag_kind == "lightweight"
-    assert candidate.ci_artifact_id == CI_ARTIFACT_ID
-    assert candidate.ci_run_attempt == CI_RUN_ATTEMPT
-    assert candidate.release_notes_sha256 == hashlib.sha256(
-        SYNTHETIC_RELEASE_NOTES.encode("utf-8"),
-    ).hexdigest()
-
-
-def test_rehearsal_binds_ci_without_reading_tag_or_draft():
+def test_prepare_inspection_never_reads_tag_or_release_endpoints():
     api = FakeApi()
 
     candidate = promotion.inspect_ci_candidate(
-        api, target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
+        api, subject_sha=SUBJECT_SHA, version=bundle.RELEASE_VERSION,
         ci_run_id=CI_RUN_ID,
     )
 
     assert candidate.ci_artifact_id == CI_ARTIFACT_ID
-    assert not any("/git/ref/tags/" in path or "/releases/" in path for path in api.get_paths)
+    assert not any("/git/ref/tags/" in path or "/releases/" in path
+                   for path in api.get_paths)
 
 
-def test_inspect_accepts_one_direct_annotated_tag():
-    candidate = promotion.inspect_candidate(
-        FakeApi(annotated=True), target_sha=TARGET_SHA,
-        version=bundle.RELEASE_VERSION, ci_run_id=CI_RUN_ID,
-        draft_release_id=DRAFT_RELEASE_ID, release_notes=SYNTHETIC_RELEASE_NOTES,
+def test_prepare_binds_prepared_artifact_without_release_visibility():
+    api = FakeApi()
+
+    size = promotion.inspect_prepared_artifact(
+        api, artifact_id=PREPARED_ARTIFACT_ID, digest=PREPARED_DIGEST,
+        workflow_run_id=PREPARED_WORKFLOW_RUN_ID, subject_sha=SUBJECT_SHA,
     )
 
-    assert candidate.tag_kind == "annotated" and candidate.tag_object_sha == TAG_SHA
+    assert size == PREPARED_SIZE
+    assert not any("/git/ref/tags/" in path or "/releases/" in path
+                   for path in api.get_paths)
 
 
-def test_inspect_rejects_nested_annotated_tag():
-    with pytest.raises(bundle.ReleaseError) as error:
-        promotion.inspect_candidate(
-            FakeApi(annotated=True, nested=True), target_sha=TARGET_SHA,
-            version=bundle.RELEASE_VERSION, ci_run_id=CI_RUN_ID,
-            draft_release_id=DRAFT_RELEASE_ID, release_notes=SYNTHETIC_RELEASE_NOTES,
-        )
-
-    assert "directly to one target commit" in str(error.value)
-
-
-@pytest.mark.parametrize("fault", ["missing", "failed", "renamed"])
-def test_inspect_rejects_job_matrix_drift(fault):
+def test_draft_rehearsal_reads_exact_empty_draft_without_tag_or_upload(tmp_path):
     api = FakeApi()
-    if fault == "missing":
-        api.jobs["jobs"].pop()
-        api.jobs["total_count"] -= 1
-    elif fault == "failed":
-        api.jobs["jobs"][0]["conclusion"] = "failure"
-    else:
-        api.jobs["jobs"][0]["name"] = "Unexpected job"
 
+    candidate = _inspect(api, write_bundle(tmp_path))
+
+    assert candidate.tag_object_sha is None and candidate.asset_ids == ()
+    assert not any("/git/ref/tags/" in path for path in api.get_paths)
+    assert api.uploads == []
+
+
+def test_dry_run_reads_empty_draft_and_binds_annotated_tag_without_upload(tmp_path):
+    api = FakeApi(annotated=True)
+
+    candidate = _inspect(
+        api, write_bundle(tmp_path), mode=bundle.DRY_RUN_MODE,
+    )
+
+    assert (candidate.tag_object_sha, candidate.tag_kind) == (TAG_SHA, "annotated")
+    assert api.uploads == []
+
+
+def test_draft_rehearsal_succeeds_even_if_tag_endpoint_would_be_unavailable(tmp_path):
+    class NoTagApi(FakeApi):
+        def get(self, path: str) -> dict:
+            if "/git/ref/tags/" in path:
+                raise AssertionError("draft-rehearsal must not read a tag")
+            return super().get(path)
+
+    _inspect(NoTagApi(), write_bundle(tmp_path))
+
+
+@pytest.mark.parametrize("mode", ["rehearsal", "unknown", "upload_draft"])
+def test_protected_inspection_rejects_wrong_mode(tmp_path, mode):
     with pytest.raises(bundle.ReleaseError) as error:
-        promotion.inspect_candidate(
-            api, target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
-            ci_run_id=CI_RUN_ID, draft_release_id=DRAFT_RELEASE_ID,
-            release_notes=SYNTHETIC_RELEASE_NOTES,
-        )
+        _inspect(FakeApi(), write_bundle(tmp_path), mode=mode)
 
-    assert "CI job" in str(error.value) or "every exact CI job" in str(error.value)
-
-
-def test_inspect_rejects_duplicate_or_wrong_bound_ci_artifact():
-    api = FakeApi()
-    api.ci_artifacts = _ci_artifacts(duplicate=True)
-
-    with pytest.raises(bundle.ReleaseError) as error:
-        promotion.inspect_candidate(
-            api, target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
-            ci_run_id=CI_RUN_ID, draft_release_id=DRAFT_RELEASE_ID,
-            release_notes=SYNTHETIC_RELEASE_NOTES,
-        )
-
-    assert "one unique release-dist" in str(error.value)
+    assert "protected draft mode" in str(error.value)
 
 
 @pytest.mark.parametrize(
-    "fault", ["master", "run", "draft-target", "draft-name", "draft-body", "nonempty"],
+    "fault", ["id", "target", "name", "body", "state", "immutable", "nonempty"],
 )
-def test_inspect_rejects_mutable_or_inexact_candidate_state(fault):
+def test_read_only_draft_modes_reject_draft_metadata_or_asset_drift(tmp_path, fault):
     api = FakeApi()
-    if fault == "master":
-        api.master_sha = OTHER_SHA
-    elif fault == "run":
-        api.run["conclusion"] = "failure"
-    elif fault == "draft-target":
+    if fault == "id":
+        api.release["id"] += 1
+    elif fault == "target":
         api.release["target_commitish"] = "master"
-    elif fault == "draft-name":
-        api.release["name"] = "Trust Meter 0.2.0 production-ready"
-    elif fault == "draft-body":
+    elif fault == "name":
+        api.release["name"] = "Trust Meter v0.2.1 production-ready"
+    elif fault == "body":
         api.release["body"] += "misleading extra text\n"
+    elif fault == "state":
+        api.release["draft"] = False
+    elif fault == "immutable":
+        api.release["immutable"] = True
     else:
         api.release["assets"] = [{"name": "partial"}]
 
+    with pytest.raises(bundle.ReleaseError):
+        _inspect(api, write_bundle(tmp_path))
+
+    assert api.uploads == []
+
+
+@pytest.mark.parametrize("fault", ["wrong", "nested"])
+def test_dry_run_rejects_wrong_or_nested_tag_without_mutation(tmp_path, fault):
+    api = FakeApi(annotated=fault == "nested", nested=fault == "nested")
+    if fault == "wrong":
+        api.tag_target = OTHER_SHA
+
     with pytest.raises(bundle.ReleaseError) as error:
-        promotion.inspect_candidate(
-            api, target_sha=TARGET_SHA, version=bundle.RELEASE_VERSION,
-            ci_run_id=CI_RUN_ID, draft_release_id=DRAFT_RELEASE_ID,
-            release_notes=SYNTHETIC_RELEASE_NOTES,
-        )
+        _inspect(api, write_bundle(tmp_path), mode=bundle.DRY_RUN_MODE)
+
+    assert "subject" in str(error.value)
+    assert api.uploads == []
+
+
+@pytest.mark.parametrize(
+    "binding", ["ci_run_id", "ci_run_attempt", "ci_artifact_id",
+                 "ci_artifact_digest", "draft_release_id", "prepared_artifact_id",
+                 "prepared_artifact_digest", "prepared_artifact_size",
+                 "prepared_workflow_run_id", "release_notes_sha256"],
+)
+def test_protected_job_rejects_cross_job_binding_drift(tmp_path, binding):
+    values = {
+        "ci_run_id": CI_RUN_ID + 1,
+        "ci_run_attempt": CI_RUN_ATTEMPT + 1,
+        "ci_artifact_id": CI_ARTIFACT_ID + 1,
+        "ci_artifact_digest": "f" * 64,
+        "draft_release_id": DRAFT_RELEASE_ID + 1,
+        "prepared_artifact_id": PREPARED_ARTIFACT_ID + 1,
+        "prepared_artifact_digest": "f" * 64,
+        "prepared_artifact_size": PREPARED_SIZE + 1,
+        "prepared_workflow_run_id": PREPARED_WORKFLOW_RUN_ID + 1,
+        "release_notes_sha256": "f" * 64,
+    }
+
+    with pytest.raises(bundle.ReleaseError) as error:
+        _inspect(FakeApi(), write_bundle(tmp_path), **{binding: values[binding]})
+
+    assert str(error.value)
+
+
+@pytest.mark.parametrize("fault", ["ci-head", "prepared-head", "prepared-size"])
+def test_protected_job_rejects_remote_artifact_drift(tmp_path, fault):
+    api = FakeApi()
+    if fault == "ci-head":
+        api.ci_artifacts["artifacts"][0]["workflow_run"]["head_sha"] = OTHER_SHA
+    elif fault == "prepared-head":
+        api.prepared_artifact["workflow_run"]["head_sha"] = OTHER_SHA
+    else:
+        api.prepared_artifact["size_in_bytes"] += 1
+
+    with pytest.raises(bundle.ReleaseError) as error:
+        _inspect(api, write_bundle(tmp_path))
 
     assert str(error.value)
 
 
 def test_upload_is_create_only_and_rehashes_exact_remote_bytes(tmp_path):
     api = FakeApi()
-    target = write_bundle(tmp_path)
 
-    _upload(api, target)
+    _upload(api, write_bundle(tmp_path))
 
     assert api.uploads == list(bundle.release_asset_names())
     assert api.download_count == len(bundle.release_asset_names())
     assert api.release["draft"] is True
 
 
-@pytest.mark.parametrize("binding", ["ci_artifact_id", "ci_artifact_digest",
-                                      "ci_run_attempt", "tag_object_sha",
-                                      "release_notes_sha256"])
-def test_upload_rejects_cross_job_binding_drift(tmp_path, binding):
-    values = {
-        "ci_artifact_id": CI_ARTIFACT_ID + 1,
-        "ci_artifact_digest": "f" * 64,
-        "ci_run_attempt": CI_RUN_ATTEMPT + 1,
-        "tag_object_sha": OTHER_SHA,
-        "release_notes_sha256": "f" * 64,
-    }
-
+def test_upload_rejects_gate_tag_binding_drift_before_mutation(tmp_path):
     with pytest.raises(bundle.ReleaseError) as error:
-        _upload(FakeApi(), write_bundle(tmp_path), **{binding: values[binding]})
+        _upload(FakeApi(), write_bundle(tmp_path), tag_object_sha=OTHER_SHA)
 
-    assert "bindings differ" in str(error.value)
+    assert "tag bindings differ" in str(error.value)
 
 
-def test_upload_rejects_prepared_artifact_branch_sha_or_size_drift(tmp_path):
-    api = FakeApi()
-    api.prepared_artifact["workflow_run"]["head_sha"] = OTHER_SHA
-
+def test_upload_rejects_gate_tag_kind_drift_before_mutation(tmp_path):
     with pytest.raises(bundle.ReleaseError) as error:
-        _upload(api, write_bundle(tmp_path))
+        _upload(FakeApi(), write_bundle(tmp_path), tag_kind="annotated")
 
-    assert "prepared artifact branch or SHA mismatch" in str(error.value)
+    assert "tag bindings differ" in str(error.value)
 
 
 def test_upload_rejects_partial_existing_assets_and_requires_new_draft(tmp_path):
@@ -446,7 +495,9 @@ def test_upload_rejects_remote_download_hash_mismatch(tmp_path):
     assert "downloaded release asset" in str(error.value)
 
 
-@pytest.mark.parametrize("drift", ["master", "asset-id", "release-body"])
+@pytest.mark.parametrize(
+    "drift", ["master", "asset-id", "release-body", "prepared-size"],
+)
 def test_upload_final_gate_rejects_post_download_toctou_drift(tmp_path, drift):
     api = FakeApi()
     target = write_bundle(tmp_path)
@@ -456,12 +507,7 @@ def test_upload_final_gate_rejects_post_download_toctou_drift(tmp_path, drift):
     with pytest.raises(bundle.ReleaseError) as error:
         _upload(api, target)
 
-    expected = {
-        "master": "live master no longer matches target SHA",
-        "asset-id": "remote release asset API URL mismatch",
-        "release-body": "canonical release notes",
-    }[drift]
-    assert expected in str(error.value)
+    assert str(error.value)
 
 
 def test_upload_rechecks_tag_before_every_mutation(tmp_path):

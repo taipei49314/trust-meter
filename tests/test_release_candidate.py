@@ -1,8 +1,9 @@
-"""Tests for the Trust Meter 0.2.0 release-candidate source contract."""
+"""Tests for the Trust Meter 0.2.1 release-candidate source contract."""
 
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -17,7 +18,7 @@ def test_release_candidate_version_is_exact_and_equal_at_runtime():
     metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert metadata["project"]["version"] == __version__
-    assert __version__ == bundle.RELEASE_VERSION == "0.2.0"
+    assert __version__ == bundle.RELEASE_VERSION == "0.2.1"
 
 
 def test_schema_root_packaging_and_release_url_are_bound():
@@ -31,7 +32,7 @@ def test_schema_root_packaging_and_release_url_are_bound():
 
     assert schema["$id"] == bundle.SCHEMA_ID == (
         "https://github.com/taipei49314/trust-meter/releases/download/"
-        "v0.2.0/trust-meter-measure-v1.schema.json"
+        "v0.2.1/trust-meter-measure-v1.schema.json"
     )
     assert force_include["schemas/trust-meter-measure-v1.schema.json"] == (
         "trust_meter/schemas/trust-meter-measure-v1.schema.json"
@@ -44,13 +45,13 @@ def test_release_notes_preserve_candidate_and_authority_boundaries():
     notes = bundle.read_release_notes(notes_path)
     flattened = " ".join(notes.split())
 
-    assert notes.startswith("# Trust Meter v0.2.0\n")
+    assert notes.startswith("# Trust Meter v0.2.1\n")
     assert "release candidate before publication" in flattened
     assert "`authority_effect` fixed to `none`" in flattened
     assert "does not grant Evidence Workbench execution admission" in flattened
     assert "does not provide production multi-tool orchestration" in flattened
     assert "human must recheck" in flattened
-    assert ".github/RELEASE_NOTES-v0.2.0.md text eol=lf" in (
+    assert ".github/RELEASE_NOTES-v0.2.1.md text eol=lf" in (
         ROOT / ".gitattributes"
     ).read_text(encoding="utf-8")
 
@@ -68,3 +69,20 @@ def test_pypi_is_not_a_release_channel_or_workflow_target():
     assert "upload.pypi.org" not in workflow_text
     assert "twine" not in workflow_text
     assert "PyPI is not a publication channel for this release" in notes
+
+
+def test_v020_is_preserved_only_as_timeless_quarantined_candidate_history():
+    history = (ROOT / ".github" / "RELEASE_CANDIDATE_HISTORY.md").read_text(
+        encoding="utf-8",
+    )
+    flattened = " ".join(history.split())
+    historical_notes = ROOT / ".github" / "RELEASE_NOTES-v0.2.0.md"
+
+    assert historical_notes.is_file()
+    assert bundle.RELEASE_NOTES_NAME == "RELEASE_NOTES-v0.2.1.md"
+    assert all(word in flattened for word in ("quarantined", "abandoned", "unpublished"))
+    assert "not a public Trust Meter release" in flattened
+    assert "zero attached assets" in flattened
+    assert "HTTP 403" in flattened and "before mutation" in flattened
+    assert re.search(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])", history) is None
+    assert re.search(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", history) is None
