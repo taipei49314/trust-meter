@@ -11,7 +11,7 @@ import pytest
 from tools import release_bundle as bundle
 
 
-SYNTHETIC_RELEASE_NOTES = "# Trust Meter v0.2.0\n\nSynthetic release notes.\n"
+SYNTHETIC_RELEASE_NOTES = "# Trust Meter v0.2.1\n\nSynthetic release notes.\n"
 
 
 def write_bundle(root: Path) -> Path:
@@ -43,8 +43,8 @@ def write_bundle(root: Path) -> Path:
 
 
 def _write_candidate_source(
-    project: Path, *, metadata_version: str = "0.2.0",
-    runtime_version: str = "0.2.0", schema_text: str | None = None,
+    project: Path, *, metadata_version: str = "0.2.1",
+    runtime_version: str = "0.2.1", schema_text: str | None = None,
 ) -> None:
     package = project / "src" / "trust_meter"
     schema_dir = project / "schemas"
@@ -162,8 +162,8 @@ def test_current_candidate_passes_source_gates_before_requiring_exact_dist(tmp_p
     with pytest.raises(bundle.ReleaseError) as error:
         bundle.prepare_release_bundle(dist, project, tmp_path / "release-bundle")
 
-    assert 'version = "0.2.0"' in metadata
-    assert '__version__ = "0.2.0"' in runtime
+    assert 'version = "0.2.1"' in metadata
+    assert '__version__ = "0.2.1"' in runtime
     assert schema["$id"] == bundle.SCHEMA_ID
     assert "promoted CI distribution" in str(error.value)
 
@@ -171,7 +171,7 @@ def test_current_candidate_passes_source_gates_before_requiring_exact_dist(tmp_p
 @pytest.mark.parametrize(
     ("fault", "message"),
     [
-        ("metadata", "locked to release version 0.2.0"),
+        ("metadata", "locked to release version 0.2.1"),
         ("runtime", "candidate runtime version"),
         ("schema-id", "exact release asset URL"),
         ("schema-duplicate", "duplicate JSON key"),

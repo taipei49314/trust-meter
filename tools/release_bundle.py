@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 REPOSITORY = "taipei49314/trust-meter"
-RELEASE_VERSION = "0.2.0"
+RELEASE_VERSION = "0.2.1"
 RELEASE_TAG = f"v{RELEASE_VERSION}"
 RELEASE_NAME = f"Trust Meter {RELEASE_TAG}"
 HTTPS_SCHEME = "https"
@@ -20,19 +20,30 @@ GITHUB_WEB_HOST = "github.com"
 DEFAULT_BRANCH = "master"
 CI_WORKFLOW_PATH = ".github/workflows/trust.yml"
 CI_ARTIFACT_NAME = "release-dist"
-PREPARED_ARTIFACT_NAME = "trust-meter-v0.2.0-release-bundle"
+PREPARED_ARTIFACT_NAME = "trust-meter-v0.2.1-release-bundle"
 SCHEMA_NAME = "trust-meter-measure-v1.schema.json"
 SCHEMA_ID = urllib.parse.urlunsplit(
     (HTTPS_SCHEME, GITHUB_WEB_HOST,
      f"/{REPOSITORY}/releases/download/{RELEASE_TAG}/{SCHEMA_NAME}", "", "")
 )
 CHECKSUM_NAME = "SHA256SUMS.txt"
-RELEASE_NOTES_NAME = "RELEASE_NOTES-v0.2.0.md"
+RELEASE_NOTES_NAME = "RELEASE_NOTES-v0.2.1.md"
 CONTROL_SCRIPT_NAMES = ("github_release.py", "release_bundle.py", "release_promotion.py")
 CONTROL_NAMES = (*CONTROL_SCRIPT_NAMES, RELEASE_NOTES_NAME)
 GITHUB_API_HOST = "api.github.com"
 GITHUB_UPLOAD_HOST = "uploads.github.com"
 APPROVAL_VALUE = f"{REPOSITORY}:{RELEASE_TAG}:upload-draft"
+REHEARSAL_MODE = "rehearsal"
+DRAFT_REHEARSAL_MODE = "draft-rehearsal"
+DRY_RUN_MODE = "dry-run"
+UPLOAD_DRAFT_MODE = "upload-draft"
+RELEASE_MODES = (
+    REHEARSAL_MODE,
+    DRAFT_REHEARSAL_MODE,
+    DRY_RUN_MODE,
+    UPLOAD_DRAFT_MODE,
+)
+GATED_RELEASE_MODES = RELEASE_MODES[1:]
 HEX_SHA256 = re.compile(r"[0-9a-f]{64}")
 FULL_GIT_SHA = re.compile(r"[0-9a-f]{40}")
 VERSION_PART = re.compile(r"0|[1-9][0-9]*")
@@ -70,7 +81,7 @@ def parse_positive_integer(raw: str, label: str) -> int:
 
 
 def exact_version(raw: str) -> str:
-    """Require canonical version 0.2.0, the sole target of this workflow."""
+    """Require canonical version 0.2.1, the sole target of this workflow."""
     parts = raw.split(".")
     require(
         len(parts) == 3 and all(VERSION_PART.fullmatch(part) for part in parts),
@@ -78,6 +89,12 @@ def exact_version(raw: str) -> str:
     )
     require(raw == RELEASE_VERSION,
             f"this workflow is locked to release version {RELEASE_VERSION}")
+    return raw
+
+
+def exact_gated_mode(raw: str) -> str:
+    """Require a mode that runs in the protected private-draft job."""
+    require(raw in GATED_RELEASE_MODES, "release mode is not a protected draft mode")
     return raw
 
 

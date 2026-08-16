@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Exact release version; this workflow is locked to 0.2.0
+        description: Exact release version; this workflow is locked to 0.2.1
         required: true
-        default: 0.2.0
+        default: 0.2.1
         type: string
       commit_sha:
-        description: Full commit SHA from a successful master push CI run
+        description: Full subject commit SHA from a successful master push CI run
         required: true
         type: string
       ci_run_id:
@@ -17,28 +17,29 @@ on:
         required: true
         type: string
       draft_release_id:
-        description: Existing empty draft Release ID; required except in rehearsal mode
+        description: Existing empty draft Release ID; required outside rehearsal mode
         required: false
         type: string
       mode:
-        description: Pre-tag rehearsal, full dry-run, or create-only gated draft upload
+        description: Read-only preparation, protected draft rehearsal/dry-run, or gated upload
         required: true
         default: rehearsal
         type: choice
         options:
           - rehearsal
+          - draft-rehearsal
           - dry-run
           - upload-draft
 
 concurrency:
-  group: trust-meter-github-release-v0.2.0
+  group: trust-meter-github-release-v0.2.1
   cancel-in-progress: false
 
 permissions: {}
 
 jobs:
   prepare:
-    name: Promote and verify exact release assets
+    name: Read-only promotion and exact bundle preparation
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -47,17 +48,16 @@ jobs:
     outputs:
       prepared_artifact_id: ${{ steps.upload.outputs.artifact-id }}
       prepared_artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+      prepared_artifact_size: ${{ steps.prepared.outputs.prepared_artifact_size }}
       ci_run_attempt: ${{ steps.inspect.outputs.ci_run_attempt }}
       ci_artifact_id: ${{ steps.inspect.outputs.ci_artifact_id }}
       ci_artifact_digest: ${{ steps.inspect.outputs.ci_artifact_digest }}
-      tag_object_sha: ${{ steps.inspect.outputs.tag_object_sha }}
-      release_notes_sha256: ${{ steps.inspect.outputs.release_notes_sha256 }}
+      release_notes_sha256: ${{ steps.bundle.outputs.release_notes_sha256 }}
     env:
       RELEASE_VERSION: ${{ inputs.version }}
-      TARGET_SHA: ${{ inputs.commit_sha }}
+      SUBJECT_SHA: ${{ inputs.commit_sha }}
       CI_RUN_ID: ${{ inputs.ci_run_id }}
-      DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-      RELEASE_MODE: ${{ inputs.mode }}
+      PREPARED_WORKFLOW_RUN_ID: ${{ github.run_id }}
       EVENT_NAME: ${{ github.event_name }}
       REPOSITORY_CONTEXT: ${{ github.repository }}
       REF_CONTEXT: ${{ github.ref }}
@@ -65,7 +65,7 @@ jobs:
       REF_TYPE_CONTEXT: ${{ github.ref_type }}
       SERVER_URL_CONTEXT: ${{ github.server_url }}
       API_URL_CONTEXT: ${{ github.api_url }}
-      WORKFLOW_SHA: ${{ github.sha }}
+      CONTROL_SHA: ${{ github.sha }}
 
     steps:
       - name: Check out trusted release controls
@@ -80,50 +80,31 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Bind commit and CI; bind tag and draft when required
+      - name: Bind live master and exact successful CI artifact without draft or tag reads
         id: inspect
         env:
           GITHUB_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          if [ "$RELEASE_MODE" = rehearsal ]; then
-            printf '%s\n' "$GITHUB_TOKEN" |
-              python -I tools/github_release.py inspect-rehearsal \
-                --event-name "$EVENT_NAME" \
-                --repository "$REPOSITORY_CONTEXT" \
-                --ref "$REF_CONTEXT" \
-                --ref-name "$REF_NAME_CONTEXT" \
-                --ref-type "$REF_TYPE_CONTEXT" \
-                --server-url "$SERVER_URL_CONTEXT" \
-                --api-url "$API_URL_CONTEXT" \
-                --workflow-sha "$WORKFLOW_SHA" \
-                --target-sha "$TARGET_SHA" \
-                --version "$RELEASE_VERSION" \
-                --ci-run-id "$CI_RUN_ID" \
-                --github-output "$GITHUB_OUTPUT"
-          else
-            printf '%s\n' "$GITHUB_TOKEN" |
-              python -I tools/github_release.py inspect \
-                --event-name "$EVENT_NAME" \
-                --repository "$REPOSITORY_CONTEXT" \
-                --ref "$REF_CONTEXT" \
-                --ref-name "$REF_NAME_CONTEXT" \
-                --ref-type "$REF_TYPE_CONTEXT" \
-                --server-url "$SERVER_URL_CONTEXT" \
-                --api-url "$API_URL_CONTEXT" \
-                --workflow-sha "$WORKFLOW_SHA" \
-                --target-sha "$TARGET_SHA" \
-                --version "$RELEASE_VERSION" \
-                --ci-run-id "$CI_RUN_ID" \
-                --draft-release-id "$DRAFT_RELEASE_ID" \
-                --release-notes ".github/RELEASE_NOTES-v0.2.0.md" \
-                --github-output "$GITHUB_OUTPUT"
-          fi
+          printf '%s\n' "$GITHUB_TOKEN" |
+            python -I tools/github_release.py inspect-ci \
+              --event-name "$EVENT_NAME" \
+              --repository "$REPOSITORY_CONTEXT" \
+              --ref "$REF_CONTEXT" \
+              --ref-name "$REF_NAME_CONTEXT" \
+              --ref-type "$REF_TYPE_CONTEXT" \
+              --server-url "$SERVER_URL_CONTEXT" \
+              --api-url "$API_URL_CONTEXT" \
+              --control-sha "$CONTROL_SHA" \
+              --subject-sha "$SUBJECT_SHA" \
+              --version "$RELEASE_VERSION" \
+              --ci-run-id "$CI_RUN_ID" \
+              --github-output "$GITHUB_OUTPUT"
 
-      - name: Check out candidate source without executing it
+      - name: Check out the identical subject source without executing it
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ steps.inspect.outputs.target_sha }}
+          ref: ${{ steps.inspect.outputs.subject_sha }}
           path: candidate-source
           fetch-depth: 1
           persist-credentials: false
@@ -139,18 +120,20 @@ jobs:
           digest-mismatch: error
 
       - name: Verify promoted archives and prepare the exact bundle
+        id: bundle
         run: >-
           python -I tools/github_release.py prepare
           --dist-dir candidate-dist
           --project-root candidate-source
           --bundle-dir release-bundle
           --version "$RELEASE_VERSION"
+          --github-output "$GITHUB_OUTPUT"
 
       - name: Upload prepared release bundle
         id: upload
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: trust-meter-v0.2.0-release-bundle
+          name: trust-meter-v0.2.1-release-bundle
           path: release-bundle/
           if-no-files-found: error
           retention-days: 7
@@ -158,9 +141,33 @@ jobs:
           overwrite: false
           include-hidden-files: false
 
-  upload-draft:
-    name: Create-only upload to gated draft release
-    if: inputs.mode == 'upload-draft'
+      - name: Bind uploaded artifact size, digest, run, branch, and subject SHA
+        id: prepared
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PREPARED_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          PREPARED_ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        shell: bash
+        run: |
+          printf '%s\n' "$GITHUB_TOKEN" |
+            python -I tools/github_release.py inspect-prepared \
+              --event-name "$EVENT_NAME" \
+              --repository "$REPOSITORY_CONTEXT" \
+              --ref "$REF_CONTEXT" \
+              --ref-name "$REF_NAME_CONTEXT" \
+              --ref-type "$REF_TYPE_CONTEXT" \
+              --server-url "$SERVER_URL_CONTEXT" \
+              --api-url "$API_URL_CONTEXT" \
+              --control-sha "$CONTROL_SHA" \
+              --subject-sha "$SUBJECT_SHA" \
+              --prepared-artifact-id "$PREPARED_ARTIFACT_ID" \
+              --prepared-artifact-digest "$PREPARED_ARTIFACT_DIGEST" \
+              --prepared-workflow-run-id "$PREPARED_WORKFLOW_RUN_ID" \
+              --github-output "$GITHUB_OUTPUT"
+
+  release-gate:
+    name: Protected draft read gate and optional create-only upload
+    if: inputs.mode != 'rehearsal'
     needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -170,18 +177,19 @@ jobs:
       actions: read
       contents: write
     env:
+      RELEASE_MODE: ${{ inputs.mode }}
       RELEASE_VERSION: ${{ inputs.version }}
-      TARGET_SHA: ${{ inputs.commit_sha }}
+      SUBJECT_SHA: ${{ inputs.commit_sha }}
       CI_RUN_ID: ${{ inputs.ci_run_id }}
       DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-      PREPARED_ARTIFACT_ID: ${{ needs.prepare.outputs.prepared_artifact_id }}
-      PREPARED_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.prepared_artifact_digest }}
       BOUND_CI_RUN_ATTEMPT: ${{ needs.prepare.outputs.ci_run_attempt }}
       BOUND_CI_ARTIFACT_ID: ${{ needs.prepare.outputs.ci_artifact_id }}
       BOUND_CI_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.ci_artifact_digest }}
-      BOUND_TAG_OBJECT_SHA: ${{ needs.prepare.outputs.tag_object_sha }}
+      PREPARED_ARTIFACT_ID: ${{ needs.prepare.outputs.prepared_artifact_id }}
+      PREPARED_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.prepared_artifact_digest }}
+      PREPARED_ARTIFACT_SIZE: ${{ needs.prepare.outputs.prepared_artifact_size }}
       BOUND_RELEASE_NOTES_SHA256: ${{ needs.prepare.outputs.release_notes_sha256 }}
-      WORKFLOW_RUN_ID: ${{ github.run_id }}
+      PREPARED_WORKFLOW_RUN_ID: ${{ github.run_id }}
       EVENT_NAME: ${{ github.event_name }}
       REPOSITORY_CONTEXT: ${{ github.repository }}
       REF_CONTEXT: ${{ github.ref }}
@@ -189,7 +197,7 @@ jobs:
       REF_TYPE_CONTEXT: ${{ github.ref_type }}
       SERVER_URL_CONTEXT: ${{ github.server_url }}
       API_URL_CONTEXT: ${{ github.api_url }}
-      WORKFLOW_SHA: ${{ github.sha }}
+      CONTROL_SHA: ${{ github.sha }}
 
     steps:
       - name: Set up Python 3.11 without checking out repository code
@@ -207,10 +215,46 @@ jobs:
           run-id: ${{ github.run_id }}
           digest-mismatch: error
 
+      - name: Rebind exact CI, prepared artifact, notes, draft, and required tag without mutation
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          printf '%s\n' "$GITHUB_TOKEN" |
+            python -I release-bundle/control/github_release.py inspect-draft \
+              --mode "$RELEASE_MODE" \
+              --event-name "$EVENT_NAME" \
+              --repository "$REPOSITORY_CONTEXT" \
+              --ref "$REF_CONTEXT" \
+              --ref-name "$REF_NAME_CONTEXT" \
+              --ref-type "$REF_TYPE_CONTEXT" \
+              --server-url "$SERVER_URL_CONTEXT" \
+              --api-url "$API_URL_CONTEXT" \
+              --control-sha "$CONTROL_SHA" \
+              --subject-sha "$SUBJECT_SHA" \
+              --version "$RELEASE_VERSION" \
+              --ci-run-id "$CI_RUN_ID" \
+              --ci-run-attempt "$BOUND_CI_RUN_ATTEMPT" \
+              --ci-artifact-id "$BOUND_CI_ARTIFACT_ID" \
+              --ci-artifact-digest "$BOUND_CI_ARTIFACT_DIGEST" \
+              --draft-release-id "$DRAFT_RELEASE_ID" \
+              --prepared-artifact-id "$PREPARED_ARTIFACT_ID" \
+              --prepared-artifact-digest "$PREPARED_ARTIFACT_DIGEST" \
+              --prepared-artifact-size "$PREPARED_ARTIFACT_SIZE" \
+              --prepared-workflow-run-id "$PREPARED_WORKFLOW_RUN_ID" \
+              --release-notes-sha256 "$BOUND_RELEASE_NOTES_SHA256" \
+              --bundle-dir release-bundle \
+              --release-notes release-bundle/control/RELEASE_NOTES-v0.2.1.md \
+              --github-output "$GITHUB_OUTPUT"
+
       - name: Upload exact assets and read them back while release stays draft
+        if: inputs.mode == 'upload-draft'
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TRUST_METER_RELEASE_APPROVAL: ${{ secrets.TRUST_METER_RELEASE_APPROVAL }}
+          BOUND_TAG_OBJECT_SHA: ${{ steps.gate.outputs.tag_object_sha }}
+          BOUND_TAG_KIND: ${{ steps.gate.outputs.tag_kind }}
         shell: bash
         run: |
           printf '%s\n%s\n' "$GITHUB_TOKEN" "$TRUST_METER_RELEASE_APPROVAL" |
@@ -222,30 +266,45 @@ jobs:
               --ref-type "$REF_TYPE_CONTEXT" \
               --server-url "$SERVER_URL_CONTEXT" \
               --api-url "$API_URL_CONTEXT" \
-              --workflow-sha "$WORKFLOW_SHA" \
-              --bundle-dir release-bundle \
-              --target-sha "$TARGET_SHA" \
+              --control-sha "$CONTROL_SHA" \
+              --subject-sha "$SUBJECT_SHA" \
               --version "$RELEASE_VERSION" \
               --ci-run-id "$CI_RUN_ID" \
               --ci-run-attempt "$BOUND_CI_RUN_ATTEMPT" \
               --ci-artifact-id "$BOUND_CI_ARTIFACT_ID" \
               --ci-artifact-digest "$BOUND_CI_ARTIFACT_DIGEST" \
-              --tag-object-sha "$BOUND_TAG_OBJECT_SHA" \
-              --release-notes-sha256 "$BOUND_RELEASE_NOTES_SHA256" \
               --draft-release-id "$DRAFT_RELEASE_ID" \
               --prepared-artifact-id "$PREPARED_ARTIFACT_ID" \
               --prepared-artifact-digest "$PREPARED_ARTIFACT_DIGEST" \
-              --release-notes release-bundle/control/RELEASE_NOTES-v0.2.0.md \
-              --workflow-run-id "$WORKFLOW_RUN_ID"
+              --prepared-artifact-size "$PREPARED_ARTIFACT_SIZE" \
+              --prepared-workflow-run-id "$PREPARED_WORKFLOW_RUN_ID" \
+              --release-notes-sha256 "$BOUND_RELEASE_NOTES_SHA256" \
+              --tag-object-sha "$BOUND_TAG_OBJECT_SHA" \
+              --tag-kind "$BOUND_TAG_KIND" \
+              --bundle-dir release-bundle \
+              --release-notes release-bundle/control/RELEASE_NOTES-v0.2.1.md
+
+      - name: Record read-only protected gate
+        if: inputs.mode != 'upload-draft'
+        shell: bash
+        run: |
+          {
+            echo '## PROTECTED_READ_GATE_PASSED'
+            echo
+            echo 'The protected job rebound the exact draft and all prepared inputs using GET only.'
+            echo 'draft-rehearsal did not require a tag; dry-run additionally bound the exact tag.'
+            echo 'No release asset was uploaded and no tag or Release state was changed.'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record human publication handoff
+        if: inputs.mode == 'upload-draft'
         shell: bash
         run: |
           {
             echo '## READY_FOR_HUMAN_PUBLICATION'
             echo
             echo 'The exact four assets were downloaded and rehashed from the existing draft.'
-            echo 'The exact draft title and canonical notes body were rechecked.'
+            echo 'The exact draft title, target, state, and canonical notes body were rechecked.'
             echo 'It did not create or publish a release, change draft metadata/state, or mutate a tag.'
             echo 'A human must recheck governance, title, notes, tag, target, and assets immediately before publication.'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -112,7 +112,7 @@ def _verify_machine_output(
              "installed wheel emitted the wrong schema version")
     _require(payload["authority_effect"] == "none",
              "installed wheel changed advisory authority")
-    _require(payload["tool"]["version"] == "0.2.0",
+    _require(payload["tool"]["version"] == "0.2.1",
              "installed wheel emitted the wrong version")
 
 
@@ -159,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         version = _run([executable, "--version"], outside_root, environment)
         _require(version.returncode == 0, "installed --version failed")
         version_lines = version.stdout.decode("utf-8").splitlines()
-        _require(version_lines == ["trust-meter 0.2.0"] and version.stderr == b"",
+        _require(version_lines == ["trust-meter 0.2.1"] and version.stderr == b"",
                  "installed --version output is not canonical")
         fixture = _write_fixture(outside_root)
         _verify_machine_output(executable, fixture, outside_root, environment)
