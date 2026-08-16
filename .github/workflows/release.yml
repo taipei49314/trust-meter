@@ -222,7 +222,7 @@ jobs:
         shell: bash
         run: |
           printf '%s\n' "$GITHUB_TOKEN" |
-            python -I release-bundle/control/github_release.py inspect-draft \
+            python -I -B release-bundle/control/github_release.py inspect-draft \
               --mode "$RELEASE_MODE" \
               --event-name "$EVENT_NAME" \
               --repository "$REPOSITORY_CONTEXT" \
@@ -258,7 +258,7 @@ jobs:
         shell: bash
         run: |
           printf '%s\n%s\n' "$GITHUB_TOKEN" "$TRUST_METER_RELEASE_APPROVAL" |
-            python -I release-bundle/control/github_release.py upload-draft \
+            python -I -B release-bundle/control/github_release.py upload-draft \
               --event-name "$EVENT_NAME" \
               --repository "$REPOSITORY_CONTEXT" \
               --ref "$REF_CONTEXT" \

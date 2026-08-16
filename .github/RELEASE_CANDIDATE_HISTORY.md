@@ -1,5 +1,19 @@
 # Release candidate history
 
+## v0.2.1 pre-publication rehearsal
+
+Before publication, production workflow run `31928180974` attempted a
+`draft-rehearsal` against draft `371236195`. The candidate tag was absent, and
+the unpublished draft retained zero attached assets.
+
+The bundled release-control command stopped before its first authenticated
+release-control GitHub REST GET and before any tag, draft metadata or state, or
+release-asset mutation. Executing the downloaded control with bytecode writes
+enabled created a `__pycache__` entry inside its own exact control directory, so
+the bundle verifier rejected that self-contaminated directory. The run therefore
+did not prove private-draft visibility. It did not create a tag, upload a release
+asset, or change or publish the draft.
+
 ## v0.2.0
 
 `v0.2.0` is a quarantined, abandoned, unpublished candidate. It is not a
