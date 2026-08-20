@@ -22,7 +22,7 @@ WHEEL_SCHEMA_PATH = "trust_meter/schemas/trust-meter-measure-v1.schema.json"
 
 def _metadata(requires_python: str = ">=3.11") -> bytes:
     return (
-        "Metadata-Version: 2.4\n"
+        "Metadata-Version: 2.5\n"
         "Name: trust-meter\n"
         f"Version: {VERSION}\n"
         "Summary: Measure before you trust. Deterministic, local-first, "
@@ -75,7 +75,7 @@ def _wheel_files(
         metadata = metadata.replace(b"\n\n", b"\nRequires-Dist: injected-package\n\n")
     wheel_descriptor = (
         b"Wheel-Version: 1.0\n"
-        b"Generator: hatchling 1.27.0\n"
+        b"Generator: hatchling 1.32.0\n"
         b"Root-Is-Purelib: true\n"
         b"Tag: py3-none-any\n"
     )

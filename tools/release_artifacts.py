@@ -165,7 +165,7 @@ def _verify_record(files: dict[str, bytes], record_path: str) -> None:
 def _metadata_values(raw: bytes, contract: ProjectContract, label: str) -> None:
     message = BytesParser(policy=policy.default).parsebytes(raw)
     expected = {
-        "Metadata-Version": "2.4",
+        "Metadata-Version": "2.5",
         "Name": contract.name,
         "Version": contract.version,
         "Summary": contract.description,
@@ -190,7 +190,7 @@ def _wheel_descriptor_values(raw: bytes) -> None:
     message = BytesParser(policy=policy.default).parsebytes(raw)
     expected = {
         "Wheel-Version": "1.0",
-        "Generator": "hatchling 1.27.0",
+        "Generator": "hatchling 1.32.0",
         "Root-Is-Purelib": "true",
     }
     for key, value in expected.items():
